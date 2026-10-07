@@ -146,6 +146,46 @@ export default function App() {
   const currentStepIndex = ONBOARDING_SCREENS.indexOf(currentScreen);
   const isOnboardingScreen = currentStepIndex !== -1;
 
+  // Touch swipe support for smooth mobile page transitions
+  const touchStartXRef = useRef(null);
+  const touchStartYRef = useRef(null);
+
+  const handleOnboardingTouchStart = (e) => {
+    touchStartXRef.current = e.touches[0].clientX;
+    touchStartYRef.current = e.touches[0].clientY;
+  };
+
+  const handleOnboardingTouchEnd = (e) => {
+    if (touchStartXRef.current === null) return;
+    const diffX = touchStartXRef.current - e.changedTouches[0].clientX;
+    const diffY = touchStartYRef.current - e.changedTouches[0].clientY;
+    if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 40) {
+      if (diffX > 0 && currentStepIndex < ONBOARDING_SCREENS.length - 1) {
+        // Swipe left -> Next screen
+        setCurrentScreen(ONBOARDING_SCREENS[currentStepIndex + 1]);
+      } else if (diffX < 0 && currentStepIndex > 0) {
+        // Swipe right -> Previous screen
+        setCurrentScreen(ONBOARDING_SCREENS[currentStepIndex - 1]);
+      }
+    }
+    touchStartXRef.current = null;
+    touchStartYRef.current = null;
+  };
+
+  // Keyboard navigation for testing (ArrowRight = next, ArrowLeft = back)
+  useEffect(() => {
+    if (!isOnboardingScreen) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'ArrowRight' && currentStepIndex < ONBOARDING_SCREENS.length - 1) {
+        setCurrentScreen(ONBOARDING_SCREENS[currentStepIndex + 1]);
+      } else if (e.key === 'ArrowLeft' && currentStepIndex > 0) {
+        setCurrentScreen(ONBOARDING_SCREENS[currentStepIndex - 1]);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOnboardingScreen, currentStepIndex]);
+
   // Enforce global deep black (#050505) background permanently across all screens
   useEffect(() => {
     document.body.style.backgroundColor = '#050505';
@@ -1287,12 +1327,16 @@ export default function App() {
           ONBOARDING SCREENS (SMOOTH HORIZONTAL SLIDER)
           ====================================================================== */}
       {isOnboardingScreen && (
-        <div className="onboarding-viewport">
+        <div
+          className="onboarding-viewport"
+          onTouchStart={handleOnboardingTouchStart}
+          onTouchEnd={handleOnboardingTouchEnd}
+        >
           <div
             className="onboarding-track"
             style={{
               transform: `translateX(-${currentStepIndex * 100}%)`,
-              transition: 'transform 420ms cubic-bezier(0.25, 1, 0.4, 1)'
+              transition: 'transform 440ms cubic-bezier(0.22, 1, 0.36, 1)'
             }}
           >
             {/* SCREEN 1 — EMERGENCY */}
@@ -1330,10 +1374,30 @@ export default function App() {
 
                 <div className="mobile-onboarding-footer">
                   <div className="mobile-onboarding-progress">
-                    <span className="mobile-dot active"></span>
-                    <span className="mobile-dot"></span>
-                    <span className="mobile-dot"></span>
-                    <span className="mobile-dot"></span>
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 0 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('welcome')}
+                      aria-label="Screen 1"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 1 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_what_is')}
+                      aria-label="Screen 2"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 2 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_how_it_works')}
+                      aria-label="Screen 3"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 3 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_features')}
+                      aria-label="Screen 4"
+                    />
                   </div>
 
                   <div className="mobile-onboarding-actions">
@@ -1397,10 +1461,30 @@ export default function App() {
 
                 <div className="mobile-onboarding-footer">
                   <div className="mobile-onboarding-progress">
-                    <span className="mobile-dot"></span>
-                    <span className="mobile-dot active"></span>
-                    <span className="mobile-dot"></span>
-                    <span className="mobile-dot"></span>
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 0 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('welcome')}
+                      aria-label="Screen 1"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 1 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_what_is')}
+                      aria-label="Screen 2"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 2 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_how_it_works')}
+                      aria-label="Screen 3"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 3 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_features')}
+                      aria-label="Screen 4"
+                    />
                   </div>
 
                   <div className="mobile-onboarding-actions">
@@ -1457,10 +1541,30 @@ export default function App() {
 
                 <div className="mobile-onboarding-footer">
                   <div className="mobile-onboarding-progress">
-                    <span className="mobile-dot"></span>
-                    <span className="mobile-dot"></span>
-                    <span className="mobile-dot active"></span>
-                    <span className="mobile-dot"></span>
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 0 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('welcome')}
+                      aria-label="Screen 1"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 1 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_what_is')}
+                      aria-label="Screen 2"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 2 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_how_it_works')}
+                      aria-label="Screen 3"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 3 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_features')}
+                      aria-label="Screen 4"
+                    />
                   </div>
 
                   <div className="mobile-onboarding-actions">
@@ -1551,10 +1655,30 @@ export default function App() {
 
                 <div className="mobile-onboarding-footer">
                   <div className="mobile-onboarding-progress">
-                    <span className="mobile-dot"></span>
-                    <span className="mobile-dot"></span>
-                    <span className="mobile-dot"></span>
-                    <span className="mobile-dot active"></span>
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 0 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('welcome')}
+                      aria-label="Screen 1"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 1 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_what_is')}
+                      aria-label="Screen 2"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 2 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_how_it_works')}
+                      aria-label="Screen 3"
+                    />
+                    <button
+                      type="button"
+                      className={`mobile-dot ${currentStepIndex === 3 ? 'active' : ''}`}
+                      onClick={() => setCurrentScreen('onboarding_features')}
+                      aria-label="Screen 4"
+                    />
                   </div>
 
                   <div className="mobile-onboarding-actions">
