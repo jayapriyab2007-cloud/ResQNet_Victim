@@ -57,6 +57,76 @@ export const isValidEmail = (email) => {
   return tld.length >= 2;
 };
 
+/**
+ * Onboarding Flow — Emergency Network Node Visualization
+ * Node 1 (Emergency) —— Node 2 (Emergency Sent) —— Node 3 (Rescue Team) —— Node 4 (Help Arrives)
+ * Active nodes have glowing red rings; active connections have travelling red light pulse.
+ */
+function OnboardingNetworkFlow({ step }) {
+  const nodes = [
+    { id: 1, label: 'Emergency', icon: '🚨' },
+    { id: 2, label: 'Emergency Sent', icon: '📡' },
+    { id: 3, label: 'Rescue Team', icon: '🛟' },
+    { id: 4, label: 'Help Arrives', icon: '❤️' }
+  ];
+
+  return (
+    <div className="network-flow-container" aria-label="ResQNet Emergency Network Flow">
+      <div className="network-flow-track">
+        {nodes.map((node, index) => {
+          const isCompleted = step > node.id;
+          const isActive = step === node.id;
+          
+          let nodeStatus = 'pending';
+          if (step === 4) {
+            nodeStatus = 'connected-all active';
+          } else if (isActive) {
+            nodeStatus = 'active';
+          } else if (isCompleted) {
+            nodeStatus = 'completed';
+          }
+
+          let connectorClass = 'pending';
+          if (index > 0) {
+            if (step === 4) {
+              connectorClass = `active-full pulse-step4-${index - 1}`;
+            } else if (step > index) {
+              if (step === index + 1) {
+                connectorClass = 'pulse-active';
+              } else {
+                connectorClass = 'completed';
+              }
+            }
+          }
+
+          return (
+            <React.Fragment key={node.id}>
+              {index > 0 && (
+                <div className={`network-connector ${connectorClass}`}>
+                  <div className="network-connector-line"></div>
+                  {(connectorClass.includes('pulse-active') || connectorClass.includes('active-full')) && (
+                    <div className="network-connector-pulse"></div>
+                  )}
+                </div>
+              )}
+
+              <div className="network-node-wrapper">
+                <div className={`network-node ${nodeStatus}`}>
+                  <span className="network-node-icon">{node.icon}</span>
+                  {isActive && step !== 4 && <div className="network-node-pulse-ring"></div>}
+                </div>
+                <span className={`network-node-label ${nodeStatus}`}>
+                  {node.label}
+                </span>
+              </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   // Authentication session check (User CANNOT bypass auth to enter Home)
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
@@ -70,6 +140,16 @@ export default function App() {
     const isAuth = localStorage.getItem('resqnet_authenticated') === 'true';
     return isAuth ? 'home' : 'welcome';
   });
+
+  // Onboarding screens configuration & step tracking for smooth sliding transitions
+  const ONBOARDING_SCREENS = ['welcome', 'onboarding_what_is', 'onboarding_how_it_works', 'onboarding_features'];
+  const currentStepIndex = ONBOARDING_SCREENS.indexOf(currentScreen);
+  const isOnboardingScreen = currentStepIndex !== -1;
+
+  // Enforce global deep black (#050505) background permanently across all screens
+  useEffect(() => {
+    document.body.style.backgroundColor = '#050505';
+  }, []);
 
   const [activeTab, setActiveTab] = useState('home');
 
@@ -439,6 +519,31 @@ export default function App() {
   }, [user]);
 
   // Authentication Actions (Connecting to Express + MongoDB Atlas Backend)
+
+  // 0. QUICK DEMO EVALUATOR SIGN IN
+  const handleQuickDemoLogin = () => {
+    const demoUser = {
+      id: 'demo-evaluator-victim',
+      name: 'Evaluation Officer',
+      email: 'evaluator@resqnet.org',
+      phone: '+91 98765 43210',
+      bloodGroup: 'O+',
+      emergencyContact: '+91 98765 43211'
+    };
+    try {
+      localStorage.setItem('resqnet_authenticated', 'true');
+      localStorage.setItem('resqnet_user', JSON.stringify(demoUser));
+    } catch (e) {}
+    setUser(demoUser);
+    setIsAuthenticated(true);
+    setCurrentScreen('home');
+    setActiveTab('home');
+    setSnackbar({
+      icon: '⚡',
+      title: 'Demo Session Active',
+      message: 'Signed in as Evaluation Officer for inspection.'
+    });
+  };
 
   // 1. LOGIN HANDLER
   const handleLogin = async (e) => {
@@ -1094,7 +1199,7 @@ export default function App() {
   // RENDER UI
   // ==========================================================================
   return (
-    <div className={`app-wrapper ${!isNavVisible ? 'no-bottom-nav' : ''}`}>
+    <div className={`app-wrapper ${!isNavVisible ? 'no-bottom-nav' : ''} ${isOnboardingScreen ? 'onboarding-wrapper' : ''}`}>
       {/* Top Header Bar (Shown once authenticated) */}
       {isNavVisible && (
         <header className="top-header">
@@ -1137,9 +1242,9 @@ export default function App() {
                 }}
                 style={{
                   marginTop: '6px',
-                  background: 'white',
-                  color: '#DC2626',
-                  border: 'none',
+                  background: '#1F1113',
+                  color: '#FF4D4F',
+                  border: '1px solid rgba(229, 37, 42, 0.4)',
                   padding: '4px 10px',
                   borderRadius: '4px',
                   fontWeight: '700',
@@ -1179,260 +1284,291 @@ export default function App() {
       )}
 
       {/* ======================================================================
-          ONBOARDING 1: WELCOME SCREEN
+          ONBOARDING SCREENS (SMOOTH HORIZONTAL SLIDER)
           ====================================================================== */}
-      {currentScreen === 'welcome' && (
-        <div className="splash-screen">
-          <div className="splash-hero">
-            <div className="splash-icon-wrapper">🚨</div>
-            <h1 className="splash-title">ResQNet</h1>
-            <p className="splash-tagline">Emergency Assistance Network</p>
-            <p className="splash-desc">
-              Get help quickly when you need it most. Location-aware distress signaling and automated rescue team routing.
-            </p>
-          </div>
-          <div className="splash-actions">
-            <button className="btn btn-primary btn-block" onClick={() => setCurrentScreen('onboarding_what_is')}>
-              Get Started →
-            </button>
-            <button
-              className="onboarding-skip-btn"
-              onClick={() => setCurrentScreen('login')}
-            >
-              Already registered? Sign In
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ======================================================================
-          ONBOARDING 2: WHAT IS RESQNET?
-          ====================================================================== */}
-      {currentScreen === 'onboarding_what_is' && (
-        <div className="onboarding-screen">
-          <div className="onboarding-top-nav">
-            <span className="onboarding-step-counter">Step 1 of 3</span>
-            <div className="onboarding-dots">
-              <span className="onboarding-dot active"></span>
-              <span className="onboarding-dot"></span>
-              <span className="onboarding-dot"></span>
-            </div>
-            <button className="onboarding-skip-btn" onClick={() => setCurrentScreen('login')}>
-              Skip to Login
-            </button>
-          </div>
-
-          <div className="onboarding-content-body">
-            <h2 className="onboarding-hero-title">What is ResQNet?</h2>
-            <p className="onboarding-hero-desc">
-              ResQNet is a location-aware emergency assistance platform that helps victims raise emergencies and connects them with the appropriate rescue teams.
-            </p>
-
-            <div className="pillar-card-list">
-              <div className="pillar-card">
-                <div className="pillar-icon-box">📍</div>
-                <div>
-                  <div className="pillar-title">Location Aware</div>
-                  <div className="pillar-desc">
-                    Automatically detects your device's exact GPS coordinates so emergency responders find you without delay.
+      {isOnboardingScreen && (
+        <div className="onboarding-viewport">
+          <div
+            className="onboarding-track"
+            style={{
+              transform: `translateX(-${currentStepIndex * 100}%)`,
+              transition: 'transform 420ms cubic-bezier(0.25, 1, 0.4, 1)'
+            }}
+          >
+            {/* SCREEN 1 — EMERGENCY */}
+            <div className={`onboarding-slide ${currentStepIndex === 0 ? 'active' : (currentStepIndex > 0 ? 'past' : 'future')}`}>
+              <div className="mobile-onboarding-screen">
+                <div className="mobile-onboarding-top">
+                  <div style={{ width: 44 }}></div>
+                  <div className="mobile-onboarding-brand">
+                    <span className="mobile-brand-icon">🚨</span>
+                    <span className="mobile-brand-name">
+                      ResQ<span className="brand-accent">Net</span>
+                    </span>
                   </div>
+                  <button
+                    type="button"
+                    className="mobile-skip-link"
+                    onClick={() => setCurrentScreen('login')}
+                  >
+                    Skip
+                  </button>
                 </div>
-              </div>
 
-              <div className="pillar-card">
-                <div className="pillar-icon-box">🚨</div>
-                <div>
-                  <div className="pillar-title">One-Tap SOS</div>
-                  <div className="pillar-desc">
-                    Trigger an immediate, high-priority distress beacon instantly during life-threatening danger.
+                <div className="mobile-onboarding-content">
+                  <OnboardingNetworkFlow step={1} />
+                  <div className="mobile-onboarding-icon-card">
+                    🚨
                   </div>
+                  <h1 className="mobile-onboarding-heading">
+                    Are you in an emergency?
+                  </h1>
+                  <p className="mobile-onboarding-text">
+                    When you are in danger, ResQNet helps you quickly ask for emergency assistance.
+                  </p>
                 </div>
-              </div>
 
-              <div className="pillar-card">
-                <div className="pillar-icon-box">🤝</div>
-                <div>
-                  <div className="pillar-title">Connected Rescue</div>
-                  <div className="pillar-desc">
-                    Bridges victims with verified response forces — including flood squads, fire rescue, and medical teams.
+                <div className="mobile-onboarding-footer">
+                  <div className="mobile-onboarding-progress">
+                    <span className="mobile-dot active"></span>
+                    <span className="mobile-dot"></span>
+                    <span className="mobile-dot"></span>
+                    <span className="mobile-dot"></span>
+                  </div>
+
+                  <div className="mobile-onboarding-actions">
+                    <button
+                      type="button"
+                      className="mobile-btn-primary"
+                      onClick={() => setCurrentScreen('onboarding_what_is')}
+                    >
+                      Next →
+                    </button>
+                    <button
+                      type="button"
+                      className="mobile-btn-secondary"
+                      onClick={() => setCurrentScreen('login')}
+                    >
+                      Already registered? Sign In
+                    </button>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <div className="onboarding-bottom-actions">
-            <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setCurrentScreen('welcome')}>
-              ← Back
-            </button>
-            <button className="btn btn-primary" style={{ flex: 2 }} onClick={() => setCurrentScreen('onboarding_how_it_works')}>
-              Next →
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ======================================================================
-          ONBOARDING 3: HOW RESQNET HELPS (HOW IT WORKS)
-          ====================================================================== */}
-      {currentScreen === 'onboarding_how_it_works' && (
-        <div className="onboarding-screen">
-          <div className="onboarding-top-nav">
-            <span className="onboarding-step-counter">Step 2 of 3</span>
-            <div className="onboarding-dots">
-              <span className="onboarding-dot"></span>
-              <span className="onboarding-dot active"></span>
-              <span className="onboarding-dot"></span>
-            </div>
-            <button className="onboarding-skip-btn" onClick={() => setCurrentScreen('login')}>
-              Skip to Login
-            </button>
-          </div>
-
-          <div className="onboarding-content-body">
-            <h2 className="onboarding-hero-title">How ResQNet Helps</h2>
-            <p className="onboarding-hero-desc">
-              From distress trigger to on-site rescue, every step is coordinated automatically.
-            </p>
-
-            <div className="flow-sequence">
-              <div className="flow-step-item">
-                <div className="flow-step-badge">🚨</div>
-                <div className="flow-step-info">
-                  <div className="flow-step-name">Raise SOS</div>
-                  <div className="flow-step-sub">Victim triggers distress via immediate SOS or disaster category</div>
+            {/* SCREEN 2 — SEND YOUR EMERGENCY */}
+            <div className={`onboarding-slide ${currentStepIndex === 1 ? 'active' : (currentStepIndex > 1 ? 'past' : 'future')}`}>
+              <div className="mobile-onboarding-screen">
+                <div className="mobile-onboarding-top">
+                  <button
+                    type="button"
+                    className="mobile-back-link"
+                    onClick={() => setCurrentScreen('welcome')}
+                  >
+                    ← Back
+                  </button>
+                  <div className="mobile-onboarding-brand">
+                    <span className="mobile-brand-icon">🚨</span>
+                    <span className="mobile-brand-name">
+                      ResQ<span className="brand-accent">Net</span>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="mobile-skip-link"
+                    onClick={() => setCurrentScreen('login')}
+                  >
+                    Skip
+                  </button>
                 </div>
-              </div>
-              <div className="flow-arrow-down">▼</div>
 
-              <div className="flow-step-item">
-                <div className="flow-step-badge">📍</div>
-                <div className="flow-step-info">
-                  <div className="flow-step-name">Location Detected</div>
-                  <div className="flow-step-sub">Browser Geolocation API locks exact live GPS coordinates</div>
+                <div className="mobile-onboarding-content">
+                  <OnboardingNetworkFlow step={2} />
+                  <div className="mobile-onboarding-icon-card">
+                    📡
+                  </div>
+                  <h1 className="mobile-onboarding-heading">
+                    Tell us what happened
+                  </h1>
+                  <p className="mobile-onboarding-text">
+                    ResQNet sends your emergency type, location, and important details to the appropriate rescue team.
+                  </p>
                 </div>
-              </div>
-              <div className="flow-arrow-down">▼</div>
 
-              <div className="flow-step-item">
-                <div className="flow-step-badge">🧠</div>
-                <div className="flow-step-info">
-                  <div className="flow-step-name">Emergency Routed</div>
-                  <div className="flow-step-sub">Intelligent backend routing identifies the required specialized unit</div>
-                </div>
-              </div>
-              <div className="flow-arrow-down">▼</div>
+                <div className="mobile-onboarding-footer">
+                  <div className="mobile-onboarding-progress">
+                    <span className="mobile-dot"></span>
+                    <span className="mobile-dot active"></span>
+                    <span className="mobile-dot"></span>
+                    <span className="mobile-dot"></span>
+                  </div>
 
-              <div className="flow-step-item">
-                <div className="flow-step-badge">🚑</div>
-                <div className="flow-step-info">
-                  <div className="flow-step-name">Responder Assigned</div>
-                  <div className="flow-step-sub">Nearest response team accepts dispatch and heads to coordinates</div>
-                </div>
-              </div>
-              <div className="flow-arrow-down">▼</div>
-
-              <div className="flow-step-item">
-                <div className="flow-step-badge">💬</div>
-                <div className="flow-step-info">
-                  <div className="flow-step-name">Track & Communicate</div>
-                  <div className="flow-step-sub">Follow unit on live map and chat directly with assigned responder</div>
+                  <div className="mobile-onboarding-actions">
+                    <button
+                      type="button"
+                      className="mobile-btn-primary"
+                      onClick={() => setCurrentScreen('onboarding_how_it_works')}
+                    >
+                      Next →
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Core Principle Callout Box */}
-            <div className="principle-callout">
-              <span className="principle-icon">📢</span>
-              <div>
-                <div className="principle-title">Core ResQNet Rule</div>
-                <div className="principle-quote">
-                  “You don't choose the responder. ResQNet routes your emergency to the appropriate team.”
+            {/* SCREEN 3 — RESCUE TEAM */}
+            <div className={`onboarding-slide ${currentStepIndex === 2 ? 'active' : (currentStepIndex > 2 ? 'past' : 'future')}`}>
+              <div className="mobile-onboarding-screen">
+                <div className="mobile-onboarding-top">
+                  <button
+                    type="button"
+                    className="mobile-back-link"
+                    onClick={() => setCurrentScreen('onboarding_what_is')}
+                  >
+                    ← Back
+                  </button>
+                  <div className="mobile-onboarding-brand">
+                    <span className="mobile-brand-icon">🚨</span>
+                    <span className="mobile-brand-name">
+                      ResQ<span className="brand-accent">Net</span>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="mobile-skip-link"
+                    onClick={() => setCurrentScreen('login')}
+                  >
+                    Skip
+                  </button>
                 </div>
-                <div className="principle-sub">
-                  Victims focus solely on staying safe; the platform assigns the right specialized responders automatically.
+
+                <div className="mobile-onboarding-content">
+                  <OnboardingNetworkFlow step={3} />
+                  <div className="mobile-onboarding-icon-card">
+                    🛟
+                  </div>
+                  <h1 className="mobile-onboarding-heading">
+                    Help is notified
+                  </h1>
+                  <p className="mobile-onboarding-text">
+                    Your emergency reaches the right rescue team, so they can understand your situation and respond.
+                  </p>
+                </div>
+
+                <div className="mobile-onboarding-footer">
+                  <div className="mobile-onboarding-progress">
+                    <span className="mobile-dot"></span>
+                    <span className="mobile-dot"></span>
+                    <span className="mobile-dot active"></span>
+                    <span className="mobile-dot"></span>
+                  </div>
+
+                  <div className="mobile-onboarding-actions">
+                    <button
+                      type="button"
+                      className="mobile-btn-primary"
+                      onClick={() => setCurrentScreen('onboarding_features')}
+                    >
+                      Next →
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <div className="onboarding-bottom-actions">
-            <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setCurrentScreen('onboarding_what_is')}>
-              ← Back
-            </button>
-            <button className="btn btn-primary" style={{ flex: 2 }} onClick={() => setCurrentScreen('onboarding_features')}>
-              Next →
-            </button>
-          </div>
-        </div>
-      )}
+            {/* SCREEN 4 — RESCUE + SMALL "HOW RESQNET HELPS" FLOW */}
+            <div className={`onboarding-slide ${currentStepIndex === 3 ? 'active' : 'future'}`}>
+              <div className="mobile-onboarding-screen">
+                <div className="mobile-onboarding-top">
+                  <button
+                    type="button"
+                    className="mobile-back-link"
+                    onClick={() => setCurrentScreen('onboarding_how_it_works')}
+                  >
+                    ← Back
+                  </button>
+                  <div className="mobile-onboarding-brand">
+                    <span className="mobile-brand-icon">🚨</span>
+                    <span className="mobile-brand-name">
+                      ResQ<span className="brand-accent">Net</span>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="mobile-skip-link"
+                    onClick={() => setCurrentScreen('login')}
+                  >
+                    Skip
+                  </button>
+                </div>
 
-      {/* ======================================================================
-          ONBOARDING 4: FEATURES SCREEN
-          ====================================================================== */}
-      {currentScreen === 'onboarding_features' && (
-        <div className="onboarding-screen">
-          <div className="onboarding-top-nav">
-            <span className="onboarding-step-counter">Step 3 of 3</span>
-            <div className="onboarding-dots">
-              <span className="onboarding-dot"></span>
-              <span className="onboarding-dot"></span>
-              <span className="onboarding-dot active"></span>
+                <div className="mobile-onboarding-content">
+                  <OnboardingNetworkFlow step={4} />
+                  <div className="mobile-onboarding-icon-card">
+                    ❤️
+                  </div>
+                  <h1 className="mobile-onboarding-heading">
+                    Help is on the way
+                  </h1>
+                  <p className="mobile-onboarding-text">
+                    The rescue team receives your request and comes to help you.
+                  </p>
+
+                  {/* Small Compact "How ResQNet Helps" Flow */}
+                  <div className="mobile-how-it-works-box">
+                    <div className="mobile-how-title">How ResQNet Helps</div>
+                    <div className="mobile-how-desc">
+                      From emergency to rescue, ResQNet connects your request with the right help.
+                    </div>
+                    <div className="mobile-how-track">
+                      <div className="mobile-how-node">
+                        <span className="mobile-how-node-icon">🚨</span>
+                        <span className="mobile-how-node-label">Emergency</span>
+                      </div>
+                      <span className="mobile-how-arrow">→</span>
+                      <div className="mobile-how-node">
+                        <span className="mobile-how-node-icon">📱</span>
+                        <span className="mobile-how-node-label">ResQNet</span>
+                      </div>
+                      <span className="mobile-how-arrow">→</span>
+                      <div className="mobile-how-node">
+                        <span className="mobile-how-node-icon">📡</span>
+                        <span className="mobile-how-node-label">Sent</span>
+                      </div>
+                      <span className="mobile-how-arrow">→</span>
+                      <div className="mobile-how-node">
+                        <span className="mobile-how-node-icon">🛟</span>
+                        <span className="mobile-how-node-label">Rescue Team</span>
+                      </div>
+                      <span className="mobile-how-arrow">→</span>
+                      <div className="mobile-how-node">
+                        <span className="mobile-how-node-icon">❤️</span>
+                        <span className="mobile-how-node-label">Help Arrives</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mobile-onboarding-footer">
+                  <div className="mobile-onboarding-progress">
+                    <span className="mobile-dot"></span>
+                    <span className="mobile-dot"></span>
+                    <span className="mobile-dot"></span>
+                    <span className="mobile-dot active"></span>
+                  </div>
+
+                  <div className="mobile-onboarding-actions">
+                    <button
+                      type="button"
+                      className="mobile-btn-primary"
+                      onClick={() => setCurrentScreen('login')}
+                    >
+                      Get Started
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
-            <button className="onboarding-skip-btn" onClick={() => setCurrentScreen('login')}>
-              Skip to Login
-            </button>
-          </div>
-
-          <div className="onboarding-content-body">
-            <h2 className="onboarding-hero-title">Features</h2>
-            <p className="onboarding-hero-desc">
-              Comprehensive disaster tools engineered for emergency response and resilience.
-            </p>
-
-            <div className="features-grid-onboarding">
-              <div className="feature-pill-card">
-                <span className="feature-pill-icon">🌊</span>
-                <span className="feature-pill-text">Natural Disaster Assistance</span>
-              </div>
-              <div className="feature-pill-card">
-                <span className="feature-pill-icon">🔥</span>
-                <span className="feature-pill-text">Fire Emergency</span>
-              </div>
-              <div className="feature-pill-card">
-                <span className="feature-pill-icon">🏥</span>
-                <span className="feature-pill-text">Medical Emergency</span>
-              </div>
-              <div className="feature-pill-card">
-                <span className="feature-pill-icon">🛡️</span>
-                <span className="feature-pill-text">Safety Assistance</span>
-              </div>
-              <div className="feature-pill-card">
-                <span className="feature-pill-icon">📍</span>
-                <span className="feature-pill-text">Live GPS Location</span>
-              </div>
-              <div className="feature-pill-card">
-                <span className="feature-pill-icon">🗺️</span>
-                <span className="feature-pill-text">Emergency Map</span>
-              </div>
-              <div className="feature-pill-card">
-                <span className="feature-pill-icon">💬</span>
-                <span className="feature-pill-text">Responder Communication</span>
-              </div>
-              <div className="feature-pill-card">
-                <span className="feature-pill-icon">🔴</span>
-                <span className="feature-pill-text">Offline SOS</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="onboarding-bottom-actions">
-            <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setCurrentScreen('onboarding_how_it_works')}>
-              ← Back
-            </button>
-            <button className="btn btn-primary" style={{ flex: 2 }} onClick={() => setCurrentScreen('login')}>
-              Continue to Login →
-            </button>
           </div>
         </div>
       )}
@@ -1458,7 +1594,7 @@ export default function App() {
 
             <div style={{ position: 'relative', textAlign: 'center', margin: '6px 0' }}>
               <div style={{ height: '1px', background: 'var(--border)' }}></div>
-              <span style={{ position: 'absolute', top: '-10px', left: '50%', transform: 'translateX(-50%)', background: 'white', padding: '0 10px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+              <span style={{ position: 'absolute', top: '-10px', left: '50%', transform: 'translateX(-50%)', background: 'var(--bg-card)', padding: '0 10px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                 EVALUATION DEMO
               </span>
             </div>
@@ -1466,7 +1602,7 @@ export default function App() {
             <button
               type="button"
               className="btn btn-outline btn-block btn-sm"
-              style={{ backgroundColor: '#FEF2F2', borderColor: '#FECACA', color: 'var(--primary-dark)', fontWeight: '700' }}
+              style={{ backgroundColor: '#1C0D0F', borderColor: 'rgba(229, 37, 42, 0.4)', color: '#FF7B7E', fontWeight: '700' }}
               onClick={handleQuickDemoLogin}
             >
               ⚡ Instant Demo Sign In
