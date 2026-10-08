@@ -24,14 +24,18 @@ router.post('/register', async (req, res) => {
     const blood_group = (req.body.blood_group || req.body.bloodGroup || '').trim();
     const emergency_contact = (req.body.emergency_contact || req.body.emergencyContact || '').trim();
 
+    const rawRole = (req.body.role || 'VICTIM').toUpperCase();
+    const allowedRoles = ['VICTIM', 'RESPONDER', 'ADMIN'];
+    const role = allowedRoles.includes(rawRole) ? rawRole : 'VICTIM';
+
     // Validate required fields
-    if (!name || !phone || !email || !password || !blood_group || !emergency_contact) {
-      return res.status(400).json({ error: 'All fields are required.' });
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required.' });
     }
 
     // Email format validation
     if (!validateEmail(email)) {
-      return res.status(400).json({ error: 'Please enter a valid email address.' });
+      return res.status(400).json({ error: 'Please enter a valid email address (e.g. name@gmail.com).' });
     }
 
     // Password length validation
@@ -55,15 +59,26 @@ router.post('/register', async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Create user - strictly VICTIM role for public registration
+    const responderId = role === 'RESPONDER'
+      ? (req.body.responder_id || 'RSP-' + Math.random().toString(36).substring(2, 6).toUpperCase())
+      : (role === 'ADMIN' ? 'ADM-HQ-01' : null);
+
+    const specialization = req.body.specialization || (role === 'ADMIN' ? 'Command Center Dispatch' : 'Tactical Rescue');
+    const team = req.body.team || (role === 'ADMIN' ? 'HQ Operations' : 'Rapid Response Team');
+
+    // Create user
     const newUser = new User({
       name: name.trim(),
-      phone: phone.trim(),
+      phone: phone.trim() || 'Not Provided',
       email: normalizedEmail,
       password: hashedPassword,
-      blood_group: blood_group.trim(),
-      emergency_contact: emergency_contact.trim(),
-      role: 'VICTIM',
+      blood_group: blood_group ? blood_group.trim() : 'O+',
+      emergency_contact: emergency_contact ? emergency_contact.trim() : (phone.trim() || 'Not Specified'),
+      role: role,
+      responder_id: responderId,
+      specialization: specialization,
+      team: team,
+      availability: 'AVAILABLE',
       created_at: new Date()
     });
 
@@ -75,7 +90,8 @@ router.post('/register', async (req, res) => {
         id: newUser._id,
         email: newUser.email,
         role: newUser.role,
-        name: newUser.name
+        name: newUser.name,
+        responder_id: newUser.responder_id || null
       },
       JWT_SECRET,
       { expiresIn: '7d' }
@@ -84,15 +100,16 @@ router.post('/register', async (req, res) => {
     // Audit log
     await AuditLog.create({
       user_id: newUser._id.toString(),
-      role: 'VICTIM',
-      action: 'VICTIM_REGISTERED',
+      role: newUser.role,
+      action: `${newUser.role}_REGISTERED`,
       metadata: { email: newUser.email, name: newUser.name }
     }).catch(() => {});
 
-    console.log(`[AUTH] New VICTIM registered: ${newUser.name} (${newUser.email})`);
+    console.log(`[AUTH] New ${newUser.role} registered: ${newUser.name} (${newUser.email})`);
 
     return res.status(201).json({
-      message: 'Account created successfully! Please sign in to continue.',
+      success: true,
+      message: 'Account created successfully! Welcome to ResQNet.',
       token,
       user: {
         id: newUser._id,
@@ -101,7 +118,11 @@ router.post('/register', async (req, res) => {
         phone: newUser.phone,
         blood_group: newUser.blood_group,
         emergency_contact: newUser.emergency_contact,
-        role: newUser.role
+        role: newUser.role,
+        responder_id: newUser.responder_id,
+        specialization: newUser.specialization,
+        team: newUser.team,
+        availability: newUser.availability
       }
     });
   } catch (err) {

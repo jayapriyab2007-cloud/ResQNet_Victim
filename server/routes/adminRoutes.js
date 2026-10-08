@@ -12,6 +12,9 @@ const {
   emitNotification
 } = require('../services/socketService');
 
+const bcrypt = require('bcryptjs');
+const { validateEmail } = require('../utils/routing');
+
 // Require authentication and ADMIN role for all routes in this router
 router.use(requireAuth);
 router.use(requireRole('ADMIN'));
@@ -99,6 +102,149 @@ router.get('/responders', async (req, res) => {
   } catch (err) {
     console.error('Error fetching responders:', err);
     return res.status(500).json({ success: false, message: 'Server error retrieving responders' });
+  }
+});
+
+/**
+ * @route   POST /api/admin/responders
+ * @desc    Create/Onboard a new real responder unit
+ * @access  Admin
+ */
+router.post('/responders', async (req, res) => {
+  try {
+    const { name, email, phone, password, specialization, team, blood_group } = req.body;
+
+    if (!name || !email) {
+      return res.status(400).json({ success: false, message: 'Name and email are required.' });
+    }
+
+    if (!validateEmail(email)) {
+      return res.status(400).json({ success: false, message: 'Please enter a valid email address (e.g. name@gmail.com).' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const existing = await User.findOne({ email: normalizedEmail });
+    if (existing) {
+      return res.status(400).json({ success: false, message: 'A user with this email already exists.' });
+    }
+
+    const defaultPass = password && password.length >= 6 ? password : 'responder123';
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(defaultPass, salt);
+
+    const responderId = 'RSP-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+
+    const newResponder = new User({
+      name: name.trim(),
+      email: normalizedEmail,
+      phone: phone ? phone.trim() : 'Not Provided',
+      password: hashedPassword,
+      blood_group: blood_group ? blood_group.trim() : 'O+',
+      emergency_contact: phone ? phone.trim() : 'Not Specified',
+      role: 'RESPONDER',
+      responder_id: responderId,
+      specialization: specialization ? specialization.trim() : 'Field Rescue Specialist',
+      team: team ? team.trim() : 'Rapid Response Unit',
+      availability: 'AVAILABLE',
+      created_at: new Date()
+    });
+
+    await newResponder.save();
+
+    await AuditLog.create({
+      user_id: req.user.id,
+      user_name: req.user.name,
+      role: 'ADMIN',
+      action: 'ADMIN_CREATED_RESPONDER',
+      target_user_id: responderId,
+      metadata: { name: newResponder.name, email: newResponder.email, team: newResponder.team }
+    }).catch(() => {});
+
+    console.log(`🛡️ Admin onboarded new responder: ${newResponder.name} (${newResponder.email})`);
+
+    const responderObj = newResponder.toObject();
+    delete responderObj.password;
+
+    return res.status(201).json({
+      success: true,
+      message: `Responder ${newResponder.name} registered successfully`,
+      responder: responderObj
+    });
+  } catch (err) {
+    console.error('Create responder error:', err);
+    return res.status(500).json({ success: false, message: 'Server error registering responder' });
+  }
+});
+
+/**
+ * @route   DELETE /api/admin/responders/:id
+ * @desc    Decommission / delete a responder
+ * @access  Admin
+ */
+router.delete('/responders/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const responder = await User.findOne({
+      $or: [
+        { responder_id: id },
+        { _id: id.match(/^[0-9a-fA-F]{24}$/) ? id : null }
+      ]
+    });
+
+    if (!responder) {
+      return res.status(404).json({ success: false, message: 'Responder not found' });
+    }
+
+    await User.deleteOne({ _id: responder._id });
+
+    // Remove from active emergency assignments
+    await Emergency.updateMany(
+      { 'assigned_responders.responder_id': responder.responder_id },
+      { $pull: { assigned_responders: { responder_id: responder.responder_id } } }
+    );
+
+    await AuditLog.create({
+      user_id: req.user.id,
+      user_name: req.user.name,
+      role: 'ADMIN',
+      action: 'ADMIN_DECOMMISSIONED_RESPONDER',
+      target_user_id: responder.responder_id || responder._id.toString(),
+      metadata: { name: responder.name, email: responder.email }
+    }).catch(() => {});
+
+    return res.status(200).json({
+      success: true,
+      message: `Responder ${responder.name} deleted successfully`
+    });
+  } catch (err) {
+    console.error('Delete responder error:', err);
+    return res.status(500).json({ success: false, message: 'Server error deleting responder' });
+  }
+});
+
+/**
+ * @route   POST /api/admin/clear-demo-data
+ * @desc    Purge any mock/demo items from database
+ * @access  Admin
+ */
+router.post('/clear-demo-data', async (req, res) => {
+  try {
+    const demoEmailRegex = /(@resqnet\.com$|@resqnet\.org$|@example\.com$|@test\.com$)/i;
+    const deletedUsers = await User.deleteMany({ email: { $regex: demoEmailRegex } });
+    const deletedEmergencies = await Emergency.deleteMany({
+      $or: [
+        { user_id: { $regex: /^victim_demo/ } },
+        { emergency_id: { $regex: /^RQ-20261005/ } }
+      ]
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Purged ${deletedUsers.deletedCount} demo users and ${deletedEmergencies.deletedCount} demo emergencies.`
+    });
+  } catch (err) {
+    console.error('Clear demo data error:', err);
+    return res.status(500).json({ success: false, message: 'Server error clearing demo data' });
   }
 });
 

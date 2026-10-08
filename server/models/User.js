@@ -1,4 +1,4 @@
-﻿const mongoose = require('mongoose');
+const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
   name: {
@@ -25,14 +25,13 @@ const userSchema = new mongoose.Schema({
   },
   blood_group: {
     type: String,
-    required: [true, 'Blood group is required'],
     trim: true,
-    enum: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
+    default: 'O+'
   },
   emergency_contact: {
     type: String,
-    required: [true, 'Emergency contact number is required'],
-    trim: true
+    trim: true,
+    default: 'Not Specified'
   },
   role: {
     type: String,

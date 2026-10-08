@@ -35,7 +35,7 @@ const EMERGENCY_CATEGORIES = [
 const INITIAL_HISTORY = [];
 
 // Express Backend API Base URL
-const API_BASE_URL = 'http://localhost:5000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 /**
  * Single reusable email validation rule for Login, Register, and Forgot Password.
@@ -76,7 +76,7 @@ function OnboardingNetworkFlow({ step }) {
         {nodes.map((node, index) => {
           const isCompleted = step > node.id;
           const isActive = step === node.id;
-          
+
           let nodeStatus = 'pending';
           if (step === 4) {
             nodeStatus = 'connected-all active';
@@ -444,7 +444,7 @@ export default function App() {
   };
 
   const fetchActualGpsLocation = () => {
-    obtainGpsPosition().catch(() => {});
+    obtainGpsPosition().catch(() => { });
   };
 
   const isGpsAvailable = gpsLocation.latitude !== null && !gpsLocation.error;
@@ -460,7 +460,7 @@ export default function App() {
       const centerLat = activeEmergency?.latitude ?? gpsLocation.latitude;
       const centerLng = activeEmergency?.longitude ?? gpsLocation.longitude;
       const hasActualCoords = (centerLat !== null && centerLat !== undefined && !isNaN(centerLat)) &&
-                              (centerLng !== null && centerLng !== undefined && !isNaN(centerLng));
+        (centerLng !== null && centerLng !== undefined && !isNaN(centerLng));
 
       if (!hasActualCoords) {
         return;
@@ -526,14 +526,14 @@ export default function App() {
             setHistoryList(formatted);
             try {
               localStorage.setItem('resqnet_history', JSON.stringify(formatted));
-            } catch (e) {}
+            } catch (e) { }
 
             const active = formatted.find(e => e.status !== 'RESOLVED' && e.status !== 'Cancelled');
             if (active && !activeEmergency) {
               setActiveEmergency(active);
               try {
                 localStorage.setItem('resqnet_active_emergency', JSON.stringify(active));
-              } catch (e) {}
+              } catch (e) { }
             }
           }
         })
@@ -573,7 +573,7 @@ export default function App() {
     try {
       localStorage.setItem('resqnet_authenticated', 'true');
       localStorage.setItem('resqnet_user', JSON.stringify(demoUser));
-    } catch (e) {}
+    } catch (e) { }
     setUser(demoUser);
     setIsAuthenticated(true);
     setCurrentScreen('home');
@@ -1019,14 +1019,14 @@ export default function App() {
       setActiveEmergency(formattedEmergency);
       try {
         localStorage.setItem('resqnet_active_emergency', JSON.stringify(formattedEmergency));
-      } catch (e) {}
+      } catch (e) { }
 
       // Add to emergency history
       setHistoryList(prev => {
         const updated = [formattedEmergency, ...prev.filter(item => (item.emergency_id || item.id) !== formattedEmergency.id)];
         try {
           localStorage.setItem('resqnet_history', JSON.stringify(updated));
-        } catch (e) {}
+        } catch (e) { }
         return updated;
       });
 
@@ -1144,13 +1144,13 @@ export default function App() {
       setActiveEmergency(formattedEmergency);
       try {
         localStorage.setItem('resqnet_active_emergency', JSON.stringify(formattedEmergency));
-      } catch (e) {}
+      } catch (e) { }
 
       setHistoryList(prev => {
         const updated = [formattedEmergency, ...prev.filter(item => (item.emergency_id || item.id) !== formattedEmergency.id)];
         try {
           localStorage.setItem('resqnet_history', JSON.stringify(updated));
-        } catch (e) {}
+        } catch (e) { }
         return updated;
       });
 
@@ -1191,14 +1191,14 @@ export default function App() {
       const updated = prev.map(item => (item.id === emgId || item.emergency_id === emgId) ? cancelledItem : item);
       try {
         localStorage.setItem('resqnet_history', JSON.stringify(updated));
-      } catch (e) {}
+      } catch (e) { }
       return updated;
     });
 
     setActiveEmergency(null);
     try {
       localStorage.removeItem('resqnet_active_emergency');
-    } catch (e) {}
+    } catch (e) { }
 
     setCancelModalOpen(false);
     setActiveTab('home');
@@ -2019,7 +2019,7 @@ export default function App() {
                   onChange={(e) => setRegisterForm({ ...registerForm, bloodGroup: e.target.value })}
                   required
                 >
-                  {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(bg => (
+                  {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-', 'A1+'].map(bg => (
                     <option key={bg} value={bg}>{bg}</option>
                   ))}
                 </select>
@@ -2910,7 +2910,7 @@ export default function App() {
                   value={editProfileForm.bloodGroup}
                   onChange={(e) => setEditProfileForm({ ...editProfileForm, bloodGroup: e.target.value })}
                 >
-                  {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(bg => (
+                  {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-', 'A1+'].map(bg => (
                     <option key={bg} value={bg}>{bg}</option>
                   ))}
                 </select>

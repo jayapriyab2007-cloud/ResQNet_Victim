@@ -110,12 +110,14 @@ const emergencyRoutes = require('./routes/emergencyRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const responderRoutes = require('./routes/responderRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const loraRoutes = require('./routes/loraRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/emergencies', emergencyRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/responder', responderRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/lora', loraRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

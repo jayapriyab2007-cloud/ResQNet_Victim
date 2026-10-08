@@ -1,4 +1,4 @@
-﻿const mongoose = require('mongoose');
+const mongoose = require('mongoose');
 
 const emergencySchema = new mongoose.Schema({
   emergency_id: {
@@ -54,6 +54,21 @@ const emergencySchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true
+  },
+  source: {
+    type: String,
+    default: 'WEB',
+    trim: true
+  },
+  lora_metadata: {
+    rssi: { type: Number },
+    snr: { type: Number },
+    node_id: { type: String },
+    battery_level: { type: Number },
+    frequency: { type: String },
+    gateway_id: { type: String },
+    raw_packet: { type: String },
+    received_at: { type: Date }
   },
   status: {
     type: String,
