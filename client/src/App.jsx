@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import L from 'leaflet';
 
 /**
@@ -293,6 +293,9 @@ export default function App() {
     }
   });
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [cancellationError, setCancellationError] = useState('');
+  const [cancelTargetEmergency, setCancelTargetEmergency] = useState(null);
 
   // Emergency History State (real emergency history from MongoDB Atlas)
   const [historyList, setHistoryList] = useState(() => {
@@ -498,50 +501,59 @@ export default function App() {
     };
   }, [currentScreen, activeEmergency, gpsLocation]);
 
-  // Sync real emergency history from MongoDB Atlas for authenticated victim
-  useEffect(() => {
-    if (isAuthenticated && user && (user.id || user._id)) {
-      const userId = user.id || user._id;
-      fetch(`${API_BASE_URL}/api/emergencies/user/${userId}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.success && Array.isArray(data.emergencies)) {
-            const formatted = data.emergencies.map(emg => ({
-              id: emg.emergency_id,
-              emergency_id: emg.emergency_id,
-              type: emg.emergency_type,
-              emoji: EMERGENCY_CATEGORIES.find(c => c.name === emg.emergency_type)?.emoji || '🚨',
-              severity: emg.severity,
-              priority: emg.priority,
-              peopleAffected: emg.people_affected,
-              latitude: emg.latitude,
-              longitude: emg.longitude,
-              message: emg.message,
-              assignedTeam: emg.assigned_team,
-              status: emg.status,
-              createdAt: new Date(emg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              date: new Date(emg.created_at).toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
-              timestamp: emg.created_at
-            }));
-            setHistoryList(formatted);
-            try {
-              localStorage.setItem('resqnet_history', JSON.stringify(formatted));
-            } catch (e) { }
+  // Sync real emergency history and active status from MongoDB Atlas for authenticated victim
+  const refreshEmergencyHistory = useCallback(async () => {
+    if (!isAuthenticated || !user) return;
+    const userId = user.id || user._id;
+    if (!userId) return;
 
-            const active = formatted.find(e => e.status !== 'RESOLVED' && e.status !== 'Cancelled');
-            if (active && !activeEmergency) {
-              setActiveEmergency(active);
-              try {
-                localStorage.setItem('resqnet_active_emergency', JSON.stringify(active));
-              } catch (e) { }
-            }
-          }
-        })
-        .catch(err => {
-          console.warn('Could not sync emergency history from backend:', err.message);
-        });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/emergencies/user/${userId}`);
+      const data = await res.json();
+      if (data.success && Array.isArray(data.emergencies)) {
+        const formatted = data.emergencies.map(emg => ({
+          id: emg.emergency_id,
+          emergency_id: emg.emergency_id,
+          type: emg.emergency_type,
+          emoji: EMERGENCY_CATEGORIES.find(c => c.name === emg.emergency_type)?.emoji || '🚨',
+          severity: emg.severity,
+          priority: emg.priority,
+          peopleAffected: emg.people_affected,
+          latitude: emg.latitude,
+          longitude: emg.longitude,
+          message: emg.message,
+          assignedTeam: emg.assigned_team,
+          status: emg.status,
+          createdAt: new Date(emg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          date: new Date(emg.created_at).toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
+          timestamp: emg.created_at
+        }));
+        setHistoryList(formatted);
+        try {
+          localStorage.setItem('resqnet_history', JSON.stringify(formatted));
+        } catch (e) { }
+
+        const active = formatted.find(e => e.status !== 'RESOLVED' && e.status !== 'Cancelled');
+        if (active) {
+          setActiveEmergency(active);
+          try {
+            localStorage.setItem('resqnet_active_emergency', JSON.stringify(active));
+          } catch (e) { }
+        } else {
+          setActiveEmergency(null);
+          try {
+            localStorage.removeItem('resqnet_active_emergency');
+          } catch (e) { }
+        }
+      }
+    } catch (err) {
+      console.warn('Could not sync emergency history from backend:', err.message);
     }
   }, [isAuthenticated, user]);
+
+  useEffect(() => {
+    refreshEmergencyHistory();
+  }, [refreshEmergencyHistory]);
 
   // Route Protection: Prevent unauthorized access to Home / emergency screens
   useEffect(() => {
@@ -631,12 +643,16 @@ export default function App() {
         email: data.user.email,
         phone: data.user.phone,
         bloodGroup: data.user.blood_group || data.user.bloodGroup || 'O+',
-        emergencyContact: data.user.emergency_contact || data.user.emergencyContact || ''
+        emergencyContact: data.user.emergency_contact || data.user.emergencyContact || '',
+        token: data.token || null
       };
 
       // Persist session to localStorage
       localStorage.setItem('resqnet_authenticated', 'true');
       localStorage.setItem('resqnet_user', JSON.stringify(authenticatedUser));
+      if (data.token) {
+        localStorage.setItem('resqnet_token', data.token);
+      }
 
       // Update React state
       setUser(authenticatedUser);
@@ -778,6 +794,9 @@ export default function App() {
     setIsAuthenticated(false);
     localStorage.removeItem('resqnet_authenticated');
     localStorage.removeItem('resqnet_user');
+    localStorage.removeItem('resqnet_token');
+    localStorage.removeItem('resqnet_active_emergency');
+    setActiveEmergency(null);
     setUser(null);
     setLoginForm({ email: '', password: '' });
     setCurrentScreen('login');
@@ -1175,40 +1194,108 @@ export default function App() {
 
   // 3. CANCEL ACTIVE EMERGENCY
   const handleCancelActiveSos = async () => {
-    if (!activeEmergency) return;
-    const emgId = activeEmergency.emergency_id || activeEmergency.id;
+    const target = cancelTargetEmergency || activeEmergency;
+    if (!target) return;
+    const emgId = target.emergency_id || target.id;
+    if (!emgId) return;
 
-    try {
-      await fetch(`${API_BASE_URL}/api/emergencies/${emgId}/cancel`, {
-        method: 'PATCH'
-      });
-    } catch (e) {
-      console.warn('Could not notify backend of cancellation:', e.message);
+    if (isCancelling) return;
+    setIsCancelling(true);
+    setCancellationError('');
+
+    const userId = user?.id || user?._id;
+    const token = user?.token || localStorage.getItem('resqnet_token');
+
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const cancelledItem = { ...activeEmergency, status: 'Cancelled' };
-    setHistoryList(prev => {
-      const updated = prev.map(item => (item.id === emgId || item.emergency_id === emgId) ? cancelledItem : item);
-      try {
-        localStorage.setItem('resqnet_history', JSON.stringify(updated));
-      } catch (e) { }
-      return updated;
-    });
-
-    setActiveEmergency(null);
     try {
-      localStorage.removeItem('resqnet_active_emergency');
-    } catch (e) { }
+      const response = await fetch(`${API_BASE_URL}/api/emergencies/${emgId}/cancel`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          user_id: userId
+        })
+      });
 
-    setCancelModalOpen(false);
-    setActiveTab('home');
-    setCurrentScreen('home');
+      const data = await response.json().catch(() => null);
 
-    setSnackbar({
-      icon: 'ℹ️',
-      title: 'Emergency Cancelled',
-      message: `Emergency #${emgId} has been cancelled.`
-    });
+      if (!response.ok || !data?.success) {
+        const errMsg = data?.error || data?.message || `Cancellation failed (Status ${response.status})`;
+        setCancellationError(errMsg);
+        setSnackbar({
+          icon: '⚠️',
+          title: 'Cancellation Failed',
+          message: errMsg
+        });
+        setIsCancelling(false);
+        return;
+      }
+
+      // Backend confirmed cancellation
+      const updatedEmergency = data.emergency || { ...target, status: 'Cancelled' };
+      const cancelledItem = {
+        ...target,
+        status: 'Cancelled',
+        updated_at: updatedEmergency.updated_at || new Date().toISOString()
+      };
+
+      // 1. Immediately clear active emergency if cancelling the currently active one
+      if (activeEmergency && (activeEmergency.emergency_id === emgId || activeEmergency.id === emgId)) {
+        setActiveEmergency(null);
+        try {
+          localStorage.removeItem('resqnet_active_emergency');
+        } catch (e) { }
+      }
+
+      // 2. Update local history list immediately
+      setHistoryList(prev => {
+        const updated = prev.map(item => (item.id === emgId || item.emergency_id === emgId) ? cancelledItem : item);
+        try {
+          localStorage.setItem('resqnet_history', JSON.stringify(updated));
+        } catch (e) { }
+        return updated;
+      });
+
+      // 3. Update currently viewed history item if open
+      setSelectedHistoryItem(prev => (prev && (prev.id === emgId || prev.emergency_id === emgId)) ? { ...prev, status: 'Cancelled' } : prev);
+
+      // 4. Close confirmation dialog and reset state
+      setCancelModalOpen(false);
+      setCancelTargetEmergency(null);
+      setIsCancelling(false);
+
+      // 5. Success notification
+      setSnackbar({
+        icon: '✅',
+        title: 'Emergency Cancelled',
+        message: `Emergency #${emgId} has been successfully cancelled.`
+      });
+
+      // 6. Navigate to Home if on Live Status
+      if (currentScreen === 'live_status') {
+        setActiveTab('home');
+        setCurrentScreen('home');
+      }
+
+      // 7. Refresh history and active emergency from backend to guarantee database consistency
+      refreshEmergencyHistory();
+
+    } catch (err) {
+      console.error('Cancellation error:', err);
+      const errMsg = 'Unable to reach backend server. Cancellation request could not be confirmed.';
+      setCancellationError(errMsg);
+      setSnackbar({
+        icon: '❌',
+        title: 'Cancellation Failed',
+        message: errMsg
+      });
+      setIsCancelling(false);
+    }
   };
 
   const handleSendChatMessage = (e) => {
@@ -2386,21 +2473,55 @@ export default function App() {
           </div>
 
           {activeEmergency && (
-            <div
-              className="active-sos-alert-banner"
-              onClick={() => {
-                setActiveTab('live_status');
-                setCurrentScreen('live_status');
-              }}
-            >
-              <div className="active-sos-banner-left">
-                <span style={{ fontSize: '1.8rem' }}>{activeEmergency.emoji}</span>
+            <div className="active-sos-alert-banner">
+              <div
+                className="active-sos-banner-left"
+                onClick={() => {
+                  setActiveTab('live_status');
+                  setCurrentScreen('live_status');
+                }}
+                style={{ cursor: 'pointer', flex: 1 }}
+              >
+                <span style={{ fontSize: '1.8rem' }}>{activeEmergency.emoji || '🚨'}</span>
                 <div>
                   <div className="active-sos-banner-title">Active Emergency in Progress</div>
                   <div className="active-sos-banner-subtitle">{activeEmergency.type} ({activeEmergency.priority})</div>
                 </div>
               </div>
-              <button className="active-sos-view-btn">Live Status →</button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="active-sos-view-btn"
+                  onClick={() => {
+                    setActiveTab('live_status');
+                    setCurrentScreen('live_status');
+                  }}
+                >
+                  Live Status →
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={{
+                    backgroundColor: '#EF4444',
+                    color: '#FFFFFF',
+                    border: 'none',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.8rem',
+                    fontWeight: '700',
+                    cursor: 'pointer'
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCancelTargetEmergency(activeEmergency);
+                    setCancellationError('');
+                    setCancelModalOpen(true);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
 
@@ -2686,8 +2807,14 @@ export default function App() {
 
               {/* Cancel Emergency Option */}
               <button
+                type="button"
                 className="btn btn-danger-outline btn-block"
-                onClick={() => setCancelModalOpen(true)}
+                disabled={isCancelling || activeEmergency.status === 'Cancelled' || activeEmergency.status === 'RESOLVED'}
+                onClick={() => {
+                  setCancelTargetEmergency(activeEmergency);
+                  setCancellationError('');
+                  setCancelModalOpen(true);
+                }}
               >
                 Cancel Emergency
               </button>
@@ -2829,6 +2956,30 @@ export default function App() {
               <div><b>Message / Notes:</b> {selectedHistoryItem.message || 'No additional notes provided.'}</div>
             </div>
             <div className="modal-actions">
+              {selectedHistoryItem.status !== 'RESOLVED' && selectedHistoryItem.status !== 'Cancelled' && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={{
+                    backgroundColor: '#EF4444',
+                    color: '#FFF',
+                    border: 'none',
+                    marginRight: 'auto',
+                    padding: '8px 14px',
+                    borderRadius: '6px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                  disabled={isCancelling}
+                  onClick={() => {
+                    setCancelTargetEmergency(selectedHistoryItem);
+                    setCancellationError('');
+                    setCancelModalOpen(true);
+                  }}
+                >
+                  Cancel Emergency
+                </button>
+              )}
               <button className="btn btn-outline btn-sm" onClick={() => setSelectedHistoryItem(null)}>
                 Close
               </button>
@@ -2954,20 +3105,54 @@ export default function App() {
 
       {/* CANCEL EMERGENCY CONFIRMATION MODAL */}
       {cancelModalOpen && (
-        <div className="modal-overlay" onClick={() => setCancelModalOpen(false)}>
+        <div
+          className="modal-overlay"
+          onClick={() => {
+            if (!isCancelling) {
+              setCancellationError('');
+              setCancelModalOpen(false);
+              setCancelTargetEmergency(null);
+            }
+          }}
+        >
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-title">
               <span>⚠️</span> Cancel Active Emergency?
             </div>
             <div className="modal-body">
-              Are you sure you want to cancel this emergency request? Responders already dispatched will be stood down.
+              <p style={{ margin: '0 0 10px 0' }}>
+                Are you sure you want to cancel emergency request <b>#{cancelTargetEmergency?.emergency_id || cancelTargetEmergency?.id || activeEmergency?.emergency_id || activeEmergency?.id}</b>?
+              </p>
+              <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                Responders already dispatched will be stood down immediately.
+              </p>
+              {cancellationError && (
+                <div style={{ marginTop: '12px', padding: '10px 12px', backgroundColor: '#FEE2E2', color: '#B91C1C', borderRadius: '8px', fontSize: '0.85rem', fontWeight: '500' }}>
+                  {cancellationError}
+                </div>
+              )}
             </div>
             <div className="modal-actions">
-              <button className="btn btn-outline btn-sm" onClick={() => setCancelModalOpen(false)}>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                disabled={isCancelling}
+                onClick={() => {
+                  setCancellationError('');
+                  setCancelModalOpen(false);
+                  setCancelTargetEmergency(null);
+                }}
+              >
                 Keep Active
               </button>
-              <button className="btn btn-primary btn-sm" onClick={handleCancelActiveSos}>
-                Yes, Cancel SOS
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={isCancelling}
+                style={{ backgroundColor: '#EF4444', borderColor: '#EF4444' }}
+                onClick={handleCancelActiveSos}
+              >
+                {isCancelling ? 'Cancelling...' : 'Yes, Cancel SOS'}
               </button>
             </div>
           </div>

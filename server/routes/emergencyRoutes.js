@@ -4,6 +4,8 @@ const Emergency = require('../models/Emergency');
 const AuditLog = require('../models/AuditLog');
 const Notification = require('../models/Notification');
 const socketService = require('../services/socketService');
+const jwt = require('jsonwebtoken');
+const { JWT_SECRET } = require('../middleware/auth');
 const { getAssignedTeam, calculatePriority, generateEmergencyId } = require('../utils/routing');
 
 /**
@@ -139,25 +141,137 @@ router.get('/user/:user_id', async (req, res) => {
 
 /**
  * PATCH /api/emergencies/:emergency_id/cancel
- * Cancel an emergency.
+ * Cancel an active emergency request.
+ * Verifies victim ownership or admin authorization.
+ * Handles already-cancelled and resolved emergencies safely.
  */
 router.patch('/:emergency_id/cancel', async (req, res) => {
   try {
     const { emergency_id } = req.params;
-    const emergency = await Emergency.findOneAndUpdate(
-      { emergency_id },
-      { status: 'Cancelled', updated_at: new Date() },
-      { new: true }
-    );
-    if (!emergency) {
-      return res.status(404).json({ error: 'Emergency record not found' });
+
+    if (!emergency_id || !emergency_id.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Emergency ID parameter is required'
+      });
     }
 
+    const trimmedId = emergency_id.trim();
+    const isObjectId = trimmedId.match(/^[0-9a-fA-F]{24}$/);
+
+    // 1. Locate emergency by custom emergency_id or MongoDB _id
+    const emergency = await Emergency.findOne({
+      $or: [
+        { emergency_id: trimmedId },
+        { _id: isObjectId ? trimmedId : null }
+      ]
+    });
+
+    if (!emergency) {
+      return res.status(404).json({
+        success: false,
+        error: 'Emergency record not found'
+      });
+    }
+
+    // 2. Identify the requesting user (via JWT token or request body/headers)
+    let authenticatedUser = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      try {
+        authenticatedUser = jwt.verify(token, JWT_SECRET);
+        req.user = authenticatedUser;
+      } catch (tokenErr) {
+        return res.status(401).json({
+          success: false,
+          error: 'Unauthorized: Invalid or expired authentication token'
+        });
+      }
+    }
+
+    const requestingUserId =
+      (authenticatedUser && authenticatedUser.id) ||
+      (req.body && req.body.user_id) ||
+      req.headers['x-user-id'] ||
+      req.query.user_id;
+
+    if (!requestingUserId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Authentication token or user_id is required to cancel this emergency'
+      });
+    }
+
+    // 3. Ownership Verification: Ensure logged-in victim owns the emergency (or is ADMIN)
+    const isAdmin = authenticatedUser && authenticatedUser.role === 'ADMIN';
+    const normalizedRequestingId = String(requestingUserId).trim();
+    const normalizedOwnerId = String(emergency.user_id).trim();
+
+    if (!isAdmin && normalizedRequestingId !== normalizedOwnerId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: You do not have permission to cancel this emergency. It belongs to another user.'
+      });
+    }
+
+    // 4. State validation: Safe handling of already-cancelled and resolved states
+    const currentStatus = (emergency.status || '').toUpperCase();
+    if (currentStatus === 'CANCELLED') {
+      return res.status(400).json({
+        success: false,
+        error: 'Emergency request has already been cancelled',
+        emergency
+      });
+    }
+
+    if (currentStatus === 'RESOLVED') {
+      return res.status(400).json({
+        success: false,
+        error: 'This emergency has already been resolved and cannot be cancelled',
+        emergency
+      });
+    }
+
+    // 5. Apply Cancellation
+    const previousStatus = emergency.status;
+    emergency.status = 'Cancelled';
+    emergency.updated_at = new Date();
+
+    if (req.body && req.body.reason) {
+      emergency.notes.push({
+        author_id: normalizedRequestingId,
+        author_name: authenticatedUser?.name || 'Victim',
+        author_role: authenticatedUser?.role || 'VICTIM',
+        note: `Cancelled by victim: ${req.body.reason.trim()}`,
+        created_at: new Date()
+      });
+    }
+
+    await emergency.save();
+
+    // 6. Audit Logging
+    await AuditLog.create({
+      user_id: normalizedRequestingId,
+      role: authenticatedUser?.role || 'VICTIM',
+      action: 'VICTIM_CANCELLED_SOS',
+      emergency_id: emergency.emergency_id,
+      metadata: {
+        previous_status: previousStatus,
+        cancellation_time: emergency.updated_at,
+        cancelled_by: normalizedRequestingId
+      }
+    }).catch(() => {});
+
+    // 7. Real-time Socket.IO Broadcast to all connected clients & dashboards
     socketService.broadcastEmergencyStatusChanged({
       emergency_id: emergency.emergency_id,
       status: 'Cancelled',
       updated_at: emergency.updated_at
     });
+    socketService.broadcastEmergencyUpdated(emergency);
+
+    console.log(`[EMERGENCY] SOS Cancelled: ${emergency.emergency_id} by user: ${normalizedRequestingId}`);
 
     return res.status(200).json({
       success: true,
@@ -166,7 +280,10 @@ router.patch('/:emergency_id/cancel', async (req, res) => {
     });
   } catch (err) {
     console.error('Error cancelling emergency:', err);
-    return res.status(500).json({ error: 'Failed to cancel emergency.' });
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to cancel emergency.'
+    });
   }
 });
 
