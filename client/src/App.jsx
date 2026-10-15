@@ -34,8 +34,8 @@ const EMERGENCY_CATEGORIES = [
 // Initial past emergency history log - empty by default (no fabricated emergencies per Part 11)
 const INITIAL_HISTORY = [];
 
-// Express Backend API Base URL
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+// Express Backend API Base URL (Defaults to deployed production Render backend)
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://resqnet-backend-uzne.onrender.com';
 
 /**
  * Single reusable email validation rule for Login, Register, and Forgot Password.
@@ -128,9 +128,16 @@ function OnboardingNetworkFlow({ step }) {
 }
 
 export default function App() {
-  // Authentication session check (User CANNOT bypass auth to enter Home)
+  // Authentication session check (User CANNOT bypass auth to enter Home without valid identity)
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return localStorage.getItem('resqnet_authenticated') === 'true';
+    const isAuth = localStorage.getItem('resqnet_authenticated') === 'true';
+    const savedUser = localStorage.getItem('resqnet_user');
+    try {
+      const u = savedUser ? JSON.parse(savedUser) : null;
+      return isAuth && Boolean(u && (u.id || u._id || u.user_id));
+    } catch {
+      return false;
+    }
   });
 
   // Screen Navigation:
@@ -138,7 +145,15 @@ export default function App() {
   // Main authenticated screens: 'home' | 'live_status' | 'history' | 'profile' | 'emergency_details' | 'chat'
   const [currentScreen, setCurrentScreen] = useState(() => {
     const isAuth = localStorage.getItem('resqnet_authenticated') === 'true';
-    return isAuth ? 'home' : 'welcome';
+    const savedUser = localStorage.getItem('resqnet_user');
+    let hasValidUser = false;
+    try {
+      const u = savedUser ? JSON.parse(savedUser) : null;
+      hasValidUser = Boolean(u && (u.id || u._id || u.user_id));
+    } catch {
+      hasValidUser = false;
+    }
+    return (isAuth && hasValidUser) ? 'home' : 'welcome';
   });
 
   // Onboarding screens configuration & step tracking for smooth sliding transitions
@@ -197,11 +212,24 @@ export default function App() {
   const [user, setUser] = useState(() => {
     try {
       const saved = localStorage.getItem('resqnet_user');
-      return saved ? JSON.parse(saved) : null;
+      const parsed = saved ? JSON.parse(saved) : null;
+      if (parsed) {
+        const id = parsed.id || parsed._id || parsed.user_id;
+        if (id) {
+          parsed.id = id;
+          parsed.user_id = id;
+        }
+      }
+      return parsed;
     } catch {
       return null;
     }
   });
+
+  // Reliable helper to retrieve the logged-in victim's unique user_id
+  const getEffectiveUserId = () => {
+    return user?.id || user?._id || user?.user_id || localStorage.getItem('resqnet_user_id') || null;
+  };
 
   // Login Form States
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
@@ -210,11 +238,17 @@ export default function App() {
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  // Manual / Fallback Location States when GPS is disabled or denied
+  const [manualLocationModalOpen, setManualLocationModalOpen] = useState(false);
+  const [manualLocationInput, setManualLocationInput] = useState('');
+  const [pendingSosTrigger, setPendingSosTrigger] = useState(null); // 'immediate' | 'category'
+
   // Forgot Password & Reset Password States
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
   const [forgotPasswordError, setForgotPasswordError] = useState('');
   const [forgotPasswordEmailError, setForgotPasswordEmailError] = useState('');
   const [isSendingOtp, setIsSendingOtp] = useState(false);
+  // Dev OTP hint (empty in production; used only for console debugging)
   const [devOtpHint, setDevOtpHint] = useState('');
 
   const [resetForm, setResetForm] = useState({
@@ -352,12 +386,10 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Fetch actual GPS coordinates using Browser Geolocation API
-    fetchActualGpsLocation();
-
-    // Continuous location tracking via watchPosition
+    // Location tracking: initialize when user is authenticated or on active dashboard
     let watchId = null;
-    if (navigator.geolocation) {
+    if (navigator.geolocation && (localStorage.getItem('resqnet_authenticated') === 'true' || currentScreen === 'home' || currentScreen === 'live_status')) {
+      fetchActualGpsLocation();
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
           setGpsLocation({
@@ -533,7 +565,7 @@ export default function App() {
           localStorage.setItem('resqnet_history', JSON.stringify(formatted));
         } catch (e) { }
 
-        const active = formatted.find(e => e.status !== 'RESOLVED' && e.status !== 'Cancelled');
+        const active = formatted.find(e => (e.status || '').toUpperCase() !== 'RESOLVED' && (e.status || '').toUpperCase() !== 'CANCELLED');
         if (active) {
           setActiveEmergency(active);
           try {
@@ -555,6 +587,15 @@ export default function App() {
     refreshEmergencyHistory();
   }, [refreshEmergencyHistory]);
 
+  // Auto-sync polling every 5s on live_status
+  useEffect(() => {
+    if (currentScreen !== 'live_status' || !activeEmergency) return;
+    const interval = setInterval(() => {
+      refreshEmergencyHistory();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [currentScreen, activeEmergency, refreshEmergencyHistory]);
+
   // Route Protection: Prevent unauthorized access to Home / emergency screens
   useEffect(() => {
     const protectedScreens = ['home', 'live_status', 'history', 'profile', 'emergency_details', 'chat'];
@@ -571,31 +612,6 @@ export default function App() {
   }, [user]);
 
   // Authentication Actions (Connecting to Express + MongoDB Atlas Backend)
-
-  // 0. QUICK DEMO EVALUATOR SIGN IN
-  const handleQuickDemoLogin = () => {
-    const demoUser = {
-      id: 'demo-evaluator-victim',
-      name: 'Evaluation Officer',
-      email: 'evaluator@resqnet.org',
-      phone: '+91 98765 43210',
-      bloodGroup: 'O+',
-      emergencyContact: '+91 98765 43211'
-    };
-    try {
-      localStorage.setItem('resqnet_authenticated', 'true');
-      localStorage.setItem('resqnet_user', JSON.stringify(demoUser));
-    } catch (e) { }
-    setUser(demoUser);
-    setIsAuthenticated(true);
-    setCurrentScreen('home');
-    setActiveTab('home');
-    setSnackbar({
-      icon: '⚡',
-      title: 'Demo Session Active',
-      message: 'Signed in as Evaluation Officer for inspection.'
-    });
-  };
 
   // 1. LOGIN HANDLER
   const handleLogin = async (e) => {
@@ -637,8 +653,10 @@ export default function App() {
       }
 
       // Successful authentication: Extract safe user info (NO passwords)
+      const userId = data.user.id || data.user._id || data.user.user_id;
       const authenticatedUser = {
-        id: data.user.id || data.user._id,
+        id: userId,
+        user_id: userId,
         name: data.user.name,
         email: data.user.email,
         phone: data.user.phone,
@@ -650,6 +668,9 @@ export default function App() {
       // Persist session to localStorage
       localStorage.setItem('resqnet_authenticated', 'true');
       localStorage.setItem('resqnet_user', JSON.stringify(authenticatedUser));
+      if (userId) {
+        localStorage.setItem('resqnet_user_id', userId);
+      }
       if (data.token) {
         localStorage.setItem('resqnet_token', data.token);
       }
@@ -794,6 +815,7 @@ export default function App() {
     setIsAuthenticated(false);
     localStorage.removeItem('resqnet_authenticated');
     localStorage.removeItem('resqnet_user');
+    localStorage.removeItem('resqnet_user_id');
     localStorage.removeItem('resqnet_token');
     localStorage.removeItem('resqnet_active_emergency');
     setActiveEmergency(null);
@@ -847,14 +869,7 @@ export default function App() {
         return;
       }
 
-      // Store demo OTP if provided by backend in development mode
-      if (data.dev_otp) {
-        setDevOtpHint(data.dev_otp);
-        setResetForm({ otp: data.dev_otp, newPassword: '', confirmNewPassword: '' });
-      } else {
-        setDevOtpHint('');
-        setResetForm({ otp: '', newPassword: '', confirmNewPassword: '' });
-      }
+      setResetForm({ otp: '', newPassword: '', confirmNewPassword: '' });
 
       setResetError('');
       setIsSendingOtp(false);
@@ -945,14 +960,115 @@ export default function App() {
 
   // Emergency Dispatch Logic (REAL Backend SOS Flow via POST /api/emergencies)
 
-  // 1. MAIN GRAND SOS BUTTON TRIGGER
-  const handleTriggerImmediateSos = async () => {
-    if (!isAuthenticated || !user) {
+  // Safe Fallback SOS when GPS is unavailable
+  const submitEmergencyWithManualLocation = async (landmarkText) => {
+    setManualLocationModalOpen(false);
+    const victimUserId = getEffectiveUserId();
+    if (!isAuthenticated || !user || !victimUserId) {
       setCurrentScreen('login');
       setSnackbar({
         icon: '🔒',
         title: 'Authentication Required',
-        message: 'Please log in to send an emergency request.'
+        message: 'Please sign in to verify your identity before sending an emergency request.'
+      });
+      return;
+    }
+    if (isSubmitting) return;
+
+    setIsSubmitting(true);
+    const isImmediate = pendingSosTrigger === 'immediate';
+    const landmarkNote = landmarkText ? landmarkText.trim() : '';
+
+    const requestBody = {
+      emergency_id: 'RQ-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8).toUpperCase(),
+      user_id: victimUserId,
+      victim_name: user?.name || '',
+      victim_phone: user?.phone || '',
+      victim_blood_group: user?.bloodGroup || user?.blood_group || '',
+      victim_emergency_contact: user?.emergencyContact || user?.emergency_contact || '',
+      emergency_type: isImmediate ? 'SOS_REQUEST' : (selectedCategory?.name || 'SOS_REQUEST'),
+      severity: isImmediate ? 'Critical' : severity,
+      people_affected: isImmediate ? 1 : peopleAffected,
+      message: isImmediate ? '' : emergencyMessage.trim(),
+      latitude: null, // Never send fabricated 0,0 or placeholder coordinates
+      longitude: null,
+      location_source: landmarkNote ? 'MANUAL' : 'NONE',
+      location_name: landmarkNote
+    };
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/emergencies`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(user?.token ? { 'Authorization': `Bearer ${user.token}` } : {})
+        },
+        body: JSON.stringify(requestBody)
+      });
+      const data = await response.json();
+      setIsSubmitting(false);
+
+      if (!response.ok) {
+        setSnackbar({
+          icon: '⚠️',
+          title: 'Emergency Failed',
+          message: data.error || 'Failed to dispatch emergency request.'
+        });
+        return;
+      }
+      const created = data.emergency;
+      const formattedEmergency = {
+        id: created.emergency_id,
+        emergency_id: created.emergency_id,
+        user_id: created.user_id,
+        type: created.emergency_type,
+        emoji: isImmediate ? '🚨' : (selectedCategory?.emoji || '🚨'),
+        severity: created.severity,
+        priority: created.priority,
+        peopleAffected: created.people_affected,
+        people_affected: created.people_affected,
+        latitude: created.latitude,
+        longitude: created.longitude,
+        locationSource: created.location_source,
+        location_name: created.location_name || '',
+        message: created.message,
+        assignedTeam: created.assigned_team,
+        assigned_team: created.assigned_team,
+        status: created.status,
+        createdAt: new Date(created.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        date: new Date(created.created_at).toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
+        timestamp: created.created_at
+      };
+      setActiveEmergency(formattedEmergency);
+      try { localStorage.setItem('resqnet_active_emergency', JSON.stringify(formattedEmergency)); } catch (e) {}
+      setHistoryList(prev => [formattedEmergency, ...prev.filter(i => (i.emergency_id || i.id) !== formattedEmergency.id)]);
+      setSnackbar({
+        icon: '⚠️',
+        title: 'Emergency Sent (Manual Location)',
+        message: 'Your emergency request has been received by ResQNet.'
+      });
+      setActiveTab('live_status');
+      setCurrentScreen('live_status');
+    } catch (err) {
+      console.error('Dispatch error:', err);
+      setIsSubmitting(false);
+      setSnackbar({
+        icon: '❌',
+        title: 'Connection Error',
+        message: 'Unable to connect to ResQNet backend server.'
+      });
+    }
+  };
+
+  // 1. MAIN GRAND SOS BUTTON TRIGGER
+  const handleTriggerImmediateSos = async () => {
+    const victimUserId = getEffectiveUserId();
+    if (!isAuthenticated || !user || !victimUserId) {
+      setCurrentScreen('login');
+      setSnackbar({
+        icon: '🔒',
+        title: 'Authentication Required',
+        message: 'Please sign in to verify your identity before sending an emergency request.'
       });
       return;
     }
@@ -963,44 +1079,52 @@ export default function App() {
       return;
     }
 
+    if (isSubmitting) return;
+
     // Request fresh device GPS position
     let coords = null;
     try {
       coords = await obtainGpsPosition();
     } catch (err) {
       console.warn('GPS acquisition failed on main SOS:', err.message);
-      setSnackbar({
-        icon: '⚠️',
-        title: 'Location Required',
-        message: 'Unable to access your location.',
-        actionText: 'Try Again',
-        onAction: () => handleTriggerImmediateSos()
-      });
+      // Honest failure: Do not silently substitute stale coordinates as current GPS
+      setPendingSosTrigger('immediate');
+      setManualLocationModalOpen(true);
       return;
     }
 
-    const userId = user.id || user._id;
+    setIsSubmitting(true);
+
     const requestBody = {
-      user_id: userId,
-      emergency_type: 'Other',
+      emergency_id: 'RQ-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8).toUpperCase(),
+      user_id: victimUserId,
+      victim_name: user?.name || '',
+      victim_phone: user?.phone || '',
+      victim_blood_group: user?.bloodGroup || user?.blood_group || '',
+      victim_emergency_contact: user?.emergencyContact || user?.emergency_contact || '',
+      emergency_type: 'SOS_REQUEST',
       severity: 'Critical',
       people_affected: 1,
-      message: 'Immediate SOS triggered by victim',
+      message: '', // Strictly neutral: no speculative narrative
       latitude: coords.latitude,
       longitude: coords.longitude,
-      location_source: 'gps'
+      location_accuracy: coords.accuracy || null,
+      location_timestamp: new Date().toISOString(),
+      location_source: 'GPS'
     };
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/emergencies`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(user?.token ? { 'Authorization': `Bearer ${user.token}` } : {})
         },
         body: JSON.stringify(requestBody)
       });
 
       const data = await response.json();
+      setIsSubmitting(false);
 
       if (!response.ok) {
         setSnackbar({
@@ -1025,6 +1149,7 @@ export default function App() {
         latitude: created.latitude,
         longitude: created.longitude,
         locationSource: created.location_source,
+        location_name: created.location_name || '',
         message: created.message,
         assignedTeam: created.assigned_team,
         assigned_team: created.assigned_team,
@@ -1052,8 +1177,8 @@ export default function App() {
       // Show real confirmation notification (No fake responder assignment)
       setSnackbar({
         icon: '✅',
-        title: 'Emergency message sent',
-        message: 'Your request has been received by ResQNet.'
+        title: 'Emergency assistance requested',
+        message: 'Your SOS request has been received by ResQNet.'
       });
 
       // Navigate to Live Status
@@ -1061,6 +1186,7 @@ export default function App() {
       setCurrentScreen('live_status');
     } catch (err) {
       console.error('SOS dispatch network error:', err);
+      setIsSubmitting(false);
       setSnackbar({
         icon: '❌',
         title: 'Connection Error',
@@ -1073,52 +1199,54 @@ export default function App() {
   const handleSendCategoryEmergency = async () => {
     if (isSubmitting) return;
 
-    if (!isAuthenticated || !user) {
+    const victimUserId = getEffectiveUserId();
+    if (!isAuthenticated || !user || !victimUserId) {
       setCurrentScreen('login');
       setSnackbar({
         icon: '🔒',
         title: 'Authentication Required',
-        message: 'Please log in to send an emergency request.'
+        message: 'Please sign in to verify your identity before sending an emergency request.'
       });
       return;
     }
-
-    setIsSubmitting(true);
 
     // Request fresh device GPS position
     let coords = null;
     try {
       coords = await obtainGpsPosition();
     } catch (err) {
-      setIsSubmitting(false);
       console.warn('GPS acquisition failed on category emergency:', err.message);
-      setSnackbar({
-        icon: '⚠️',
-        title: 'Location Required',
-        message: 'Unable to access your location.',
-        actionText: 'Try Again',
-        onAction: () => handleSendCategoryEmergency()
-      });
+      setPendingSosTrigger('category');
+      setManualLocationModalOpen(true);
       return;
     }
 
-    const userId = user.id || user._id;
+    setIsSubmitting(true);
+
     const requestBody = {
-      user_id: userId,
+      emergency_id: 'RQ-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8).toUpperCase(),
+      user_id: victimUserId,
+      victim_name: user?.name || '',
+      victim_phone: user?.phone || '',
+      victim_blood_group: user?.bloodGroup || user?.blood_group || '',
+      victim_emergency_contact: user?.emergencyContact || user?.emergency_contact || '',
       emergency_type: selectedCategory.name,
       severity: severity,
       people_affected: peopleAffected,
-      message: emergencyMessage.trim() || `${selectedCategory.name} reported. Assistance requested.`,
+      message: emergencyMessage.trim(), // Explicitly supplied by victim (empty string if none)
       latitude: coords.latitude,
       longitude: coords.longitude,
-      location_source: 'gps'
+      location_accuracy: coords.accuracy || null,
+      location_timestamp: new Date().toISOString(),
+      location_source: 'GPS'
     };
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/emergencies`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(user?.token ? { 'Authorization': `Bearer ${user.token}` } : {})
         },
         body: JSON.stringify(requestBody)
       });
@@ -1149,6 +1277,7 @@ export default function App() {
         latitude: created.latitude,
         longitude: created.longitude,
         locationSource: created.location_source,
+        location_name: created.location_name || '',
         message: created.message,
         assignedTeam: created.assigned_team,
         assigned_team: created.assigned_team,
@@ -1225,6 +1354,30 @@ export default function App() {
       const data = await response.json().catch(() => null);
 
       if (!response.ok || !data?.success) {
+        // If already cancelled on server, treat as successfully cancelled in UI
+        if (data?.error && data.error.toLowerCase().includes('already been cancelled')) {
+          const targetEmgId = target.emergency_id || target.id;
+          if (activeEmergency && (
+            activeEmergency.emergency_id === emgId ||
+            activeEmergency.id === emgId ||
+            activeEmergency.emergency_id === targetEmgId ||
+            activeEmergency.id === targetEmgId
+          )) {
+            setActiveEmergency(null);
+            try { localStorage.removeItem('resqnet_active_emergency'); } catch (e) {}
+          }
+          setCancelModalOpen(false);
+          setCancelTargetEmergency(null);
+          setIsCancelling(false);
+          refreshEmergencyHistory();
+          setSnackbar({
+            icon: 'ℹ️',
+            title: 'Already Cancelled',
+            message: `Emergency #${emgId} was already cancelled.`
+          });
+          return;
+        }
+
         const errMsg = data?.error || data?.message || `Cancellation failed (Status ${response.status})`;
         setCancellationError(errMsg);
         setSnackbar({
@@ -1245,7 +1398,13 @@ export default function App() {
       };
 
       // 1. Immediately clear active emergency if cancelling the currently active one
-      if (activeEmergency && (activeEmergency.emergency_id === emgId || activeEmergency.id === emgId)) {
+      const targetEmgId = target.emergency_id || target.id;
+      if (activeEmergency && (
+        activeEmergency.emergency_id === emgId ||
+        activeEmergency.id === emgId ||
+        activeEmergency.emergency_id === targetEmgId ||
+        activeEmergency.id === targetEmgId
+      )) {
         setActiveEmergency(null);
         try {
           localStorage.removeItem('resqnet_active_emergency');
@@ -1254,7 +1413,11 @@ export default function App() {
 
       // 2. Update local history list immediately
       setHistoryList(prev => {
-        const updated = prev.map(item => (item.id === emgId || item.emergency_id === emgId) ? cancelledItem : item);
+        const updated = prev.map(item =>
+          (item.id === emgId || item.emergency_id === emgId || item.id === targetEmgId || item.emergency_id === targetEmgId)
+            ? cancelledItem
+            : item
+        );
         try {
           localStorage.setItem('resqnet_history', JSON.stringify(updated));
         } catch (e) { }
@@ -1262,7 +1425,11 @@ export default function App() {
       });
 
       // 3. Update currently viewed history item if open
-      setSelectedHistoryItem(prev => (prev && (prev.id === emgId || prev.emergency_id === emgId)) ? { ...prev, status: 'Cancelled' } : prev);
+      setSelectedHistoryItem(prev =>
+        (prev && (prev.id === emgId || prev.emergency_id === emgId || prev.id === targetEmgId || prev.emergency_id === targetEmgId))
+          ? { ...prev, status: 'Cancelled' }
+          : prev
+      );
 
       // 4. Close confirmation dialog and reset state
       setCancelModalOpen(false);
@@ -1803,21 +1970,6 @@ export default function App() {
               Create New Account
             </button>
 
-            <div style={{ position: 'relative', textAlign: 'center', margin: '6px 0' }}>
-              <div style={{ height: '1px', background: 'var(--border)' }}></div>
-              <span style={{ position: 'absolute', top: '-10px', left: '50%', transform: 'translateX(-50%)', background: 'var(--bg-card)', padding: '0 10px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                EVALUATION DEMO
-              </span>
-            </div>
-
-            <button
-              type="button"
-              className="btn btn-outline btn-block btn-sm"
-              style={{ backgroundColor: '#1C0D0F', borderColor: 'rgba(229, 37, 42, 0.4)', color: '#FF7B7E', fontWeight: '700' }}
-              onClick={handleQuickDemoLogin}
-            >
-              ⚡ Instant Demo Sign In
-            </button>
           </div>
 
           <div style={{ textAlign: 'center' }}>
@@ -2224,8 +2376,8 @@ export default function App() {
               <button
                 type="submit"
                 className="btn btn-primary btn-block"
-                style={{ marginTop: '8px' }}
                 disabled={isSendingOtp}
+                style={{ marginTop: '6px' }}
               >
                 {isSendingOtp ? (
                   <>
@@ -2233,7 +2385,7 @@ export default function App() {
                     Sending OTP...
                   </>
                 ) : (
-                  'Send OTP'
+                  '🔢 Send Reset OTP'
                 )}
               </button>
             </form>
@@ -2809,7 +2961,7 @@ export default function App() {
               <button
                 type="button"
                 className="btn btn-danger-outline btn-block"
-                disabled={isCancelling || activeEmergency.status === 'Cancelled' || activeEmergency.status === 'RESOLVED'}
+                disabled={isCancelling || (activeEmergency.status || '').toUpperCase() === 'CANCELLED' || (activeEmergency.status || '').toUpperCase() === 'RESOLVED'}
                 onClick={() => {
                   setCancelTargetEmergency(activeEmergency);
                   setCancellationError('');
@@ -2956,7 +3108,7 @@ export default function App() {
               <div><b>Message / Notes:</b> {selectedHistoryItem.message || 'No additional notes provided.'}</div>
             </div>
             <div className="modal-actions">
-              {selectedHistoryItem.status !== 'RESOLVED' && selectedHistoryItem.status !== 'Cancelled' && (
+              {(selectedHistoryItem.status || '').toUpperCase() !== 'RESOLVED' && (selectedHistoryItem.status || '').toUpperCase() !== 'CANCELLED' && (
                 <button
                   type="button"
                   className="btn btn-sm"
@@ -3153,6 +3305,57 @@ export default function App() {
                 onClick={handleCancelActiveSos}
               >
                 {isCancelling ? 'Cancelling...' : 'Yes, Cancel SOS'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MANUAL LOCATION FALLBACK MODAL (GPS UNAVAILABLE) */}
+      {manualLocationModalOpen && (
+        <div
+          className="modal-overlay"
+          onClick={() => {
+            setManualLocationModalOpen(false);
+          }}
+        >
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">
+              <span>📍</span> Location Assistance Required
+            </div>
+            <div className="modal-body">
+              <p style={{ margin: '0 0 10px 0', fontSize: '0.9rem' }}>
+                GPS coordinates could not be retrieved from your device. To ensure rescue teams reach you without delay, please describe your current landmark or street address.
+              </p>
+              <div className="form-group" style={{ marginTop: '10px' }}>
+                <label className="form-label">Current Landmark / Street / Area</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="e.g. Near Metro Station Gate 2, Anna Salai"
+                  value={manualLocationInput}
+                  onChange={(e) => setManualLocationInput(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <p style={{ margin: '8px 0 0 0', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                Your emergency request will be dispatched with location source marked as MANUAL.
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                onClick={() => setManualLocationModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => submitEmergencyWithManualLocation(manualLocationInput)}
+              >
+                🚨 Dispatch Emergency Now
               </button>
             </div>
           </div>

@@ -18,6 +18,8 @@ const TEAM_ROUTING_MAP = {
   'Building Collapse': 'Disaster Rescue Team',
   'Storm': 'Disaster Rescue Team',
   'Heatwave': 'Medical / Disaster Team',
+  'SOS_REQUEST': 'General Emergency Team',
+  'Emergency assistance requested': 'General Emergency Team',
   'Other': 'General Emergency Team'
 };
 

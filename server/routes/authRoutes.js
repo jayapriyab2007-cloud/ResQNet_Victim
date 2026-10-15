@@ -215,20 +215,19 @@ router.post('/forgot-password', async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const isProduction = process.env.NODE_ENV === 'production';
+
+    const isEmailServiceConfigured = Boolean(process.env.SMTP_HOST || process.env.EMAIL_USER || process.env.SENDGRID_API_KEY);
+    if (!isEmailServiceConfigured) {
+      return res.status(503).json({
+        error: 'Email delivery service is not configured on this server. Password reset verification codes cannot be sent. Please contact system administrator.'
+      });
+    }
 
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
-      if (isProduction) {
-        return res.status(200).json({
-          success: true,
-          message: 'If the account exists, a reset code has been sent.'
-        });
-      } else {
-        return res.status(404).json({
-          error: 'No account found with this email address. Please check your email or register a new account.'
-        });
-      }
+      return res.status(404).json({
+        error: 'No account found with this email address. Please check your email or register a new account.'
+      });
     }
 
     const otp = crypto.randomInt(100000, 1000000).toString();
@@ -251,17 +250,9 @@ router.post('/forgot-password', async (req, res) => {
 
     console.log(`[AUTH] Password reset OTP generated for ${normalizedEmail} (Expires in 5m)`);
 
-    if (!isProduction) {
-      return res.status(200).json({
-        success: true,
-        message: 'OTP generated',
-        dev_otp: otp
-      });
-    }
-
     return res.status(200).json({
       success: true,
-      message: 'If the account exists, a reset code has been sent.'
+      message: 'Password reset code has been sent to your email.'
     });
   } catch (err) {
     console.error('Forgot Password Error:', err);

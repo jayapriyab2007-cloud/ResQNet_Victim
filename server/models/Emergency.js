@@ -12,20 +12,41 @@ const emergencySchema = new mongoose.Schema({
     required: [true, 'user_id is required'],
     index: true
   },
+  victim_name: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  victim_phone: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  victim_blood_group: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  victim_emergency_contact: {
+    type: String,
+    default: '',
+    trim: true
+  },
   emergency_type: {
     type: String,
-    required: [true, 'emergency_type is required'],
+    default: 'SOS_REQUEST',
     trim: true
   },
   severity: {
     type: String,
-    required: [true, 'severity is required'],
+    default: 'Critical',
     trim: true
   },
   priority: {
     type: String,
     required: true,
     enum: ['P1', 'P2', 'P3', 'P4'],
+    default: 'P1',
     index: true
   },
   people_affected: {
@@ -39,15 +60,29 @@ const emergencySchema = new mongoose.Schema({
   },
   latitude: {
     type: Number,
-    required: [true, 'Valid latitude is required']
+    required: false
   },
   longitude: {
     type: Number,
-    required: [true, 'Valid longitude is required']
+    required: false
+  },
+  location_accuracy: {
+    type: Number,
+    default: null
+  },
+  location_timestamp: {
+    type: Date,
+    default: null
   },
   location_source: {
     type: String,
-    default: 'gps',
+    enum: ['GPS', 'MANUAL', 'NONE'],
+    default: 'GPS',
+    trim: true
+  },
+  location_name: {
+    type: String,
+    default: '',
     trim: true
   },
   assigned_team: {

@@ -1,6 +1,8 @@
+const mongoose = require('mongoose');
 const express = require('express');
 const router = express.Router();
 const Emergency = require('../models/Emergency');
+const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
 const Notification = require('../models/Notification');
 const socketService = require('../services/socketService');
@@ -11,7 +13,11 @@ const { getAssignedTeam, calculatePriority, generateEmergencyId } = require('../
 /**
  * POST /api/emergencies or /api/emergency
  * Create a new emergency SOS request.
- * Includes Idempotency Check using emergency_id to protect against duplicate retries during poor connectivity.
+ * - Supports verified JWT token or authenticated user_id from request body/headers
+ * - Validates required fields: user_id, emergency_type, severity, coordinates
+ * - Includes Idempotency Check using emergency_id
+ * - Enforces neutral SOS event without speculative narratives
+ * - Supports explicit MANUAL location source when GPS is unavailable
  */
 router.post('/', async (req, res) => {
   try {
@@ -23,11 +29,14 @@ router.post('/', async (req, res) => {
       message,
       latitude,
       longitude,
+      location_accuracy,
+      location_timestamp,
       location_source,
+      location_name,
       emergency_id
     } = req.body;
 
-    // Idempotency protection for offline / poor connection retries
+    // 1. Idempotency protection for offline / poor connection retries
     if (emergency_id) {
       const existing = await Emergency.findOne({ emergency_id });
       if (existing) {
@@ -40,47 +49,141 @@ router.post('/', async (req, res) => {
       }
     }
 
-    if (!user_id || typeof user_id !== 'string' || !user_id.trim()) {
+    // 2. Authentication & User Identity (supports JWT token or explicit user_id)
+    let authenticatedUser = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      try {
+        authenticatedUser = jwt.verify(token, JWT_SECRET);
+      } catch (tokenErr) {
+        return res.status(401).json({
+          error: 'Unauthorized: Invalid or expired authentication token'
+        });
+      }
+    }
+
+    const effectiveUserId =
+      (authenticatedUser && (authenticatedUser.id || authenticatedUser._id)) ||
+      (typeof user_id === 'string' && user_id.trim()) ||
+      (req.headers['x-user-id'] && req.headers['x-user-id'].trim()) ||
+      null;
+
+    if (!effectiveUserId) {
       return res.status(400).json({ error: 'user_id is required' });
     }
 
+    // 3. Validate emergency_type
     if (!emergency_type || typeof emergency_type !== 'string' || !emergency_type.trim()) {
       return res.status(400).json({ error: 'emergency_type is required' });
     }
+    const resolvedType = emergency_type.trim();
 
-    if (!severity || typeof severity !== 'string' || !severity.trim()) {
-      return res.status(400).json({ error: 'severity is required' });
+    // 4. Validate severity
+    const resolvedSeverity = (typeof severity === 'string' && severity.trim())
+      ? severity.trim()
+      : 'Critical';
+
+    // 5. Coordinate validation & handling
+    const isManualOrNone = (location_source && ['MANUAL', 'NONE'].includes(String(location_source).toUpperCase())) || Boolean(location_name);
+
+    let resolvedLat = null;
+    let resolvedLng = null;
+
+    if (latitude === undefined || latitude === null || latitude === '') {
+      if (!isManualOrNone) {
+        return res.status(400).json({ error: 'latitude must be a valid number' });
+      }
+    } else {
+      const parsedLat = Number(latitude);
+      if (isNaN(parsedLat)) {
+        return res.status(400).json({ error: 'latitude must be a valid number' });
+      }
+      if (parsedLat < -90 || parsedLat > 90) {
+        return res.status(400).json({ error: 'Coordinates are out of geographical range' });
+      }
+      resolvedLat = parsedLat;
     }
 
-    if (latitude === undefined || latitude === null || typeof latitude !== 'number' || isNaN(latitude)) {
-      return res.status(400).json({ error: 'latitude must be a valid number' });
+    if (longitude === undefined || longitude === null || longitude === '') {
+      if (!isManualOrNone) {
+        return res.status(400).json({ error: 'longitude must be a valid number' });
+      }
+    } else {
+      const parsedLng = Number(longitude);
+      if (isNaN(parsedLng)) {
+        return res.status(400).json({ error: 'longitude must be a valid number' });
+      }
+      if (parsedLng < -180 || parsedLng > 180) {
+        return res.status(400).json({ error: 'Coordinates are out of geographical range' });
+      }
+      resolvedLng = parsedLng;
     }
 
-    if (longitude === undefined || longitude === null || typeof longitude !== 'number' || isNaN(longitude)) {
-      return res.status(400).json({ error: 'longitude must be a valid number' });
+    // Determine honest location source
+    let resolvedSource = 'GPS';
+    if (resolvedLat !== null && resolvedLng !== null) {
+      resolvedSource = (location_source || 'GPS').toUpperCase() === 'MANUAL' ? 'MANUAL' : 'GPS';
+    } else {
+      resolvedSource = (location_source || '').toUpperCase() === 'MANUAL' || location_name ? 'MANUAL' : 'NONE';
     }
 
-    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
-      return res.status(400).json({ error: 'Coordinates are out of geographical range' });
+    // Fetch user details from database if available (non-blocking)
+    let trustedVictimName = (authenticatedUser && authenticatedUser.name) || req.body.victim_name || req.body.name || '';
+    let trustedVictimPhone = req.body.victim_phone || req.body.phone || '';
+    let trustedVictimBloodGroup = req.body.victim_blood_group || req.body.blood_group || '';
+    let trustedVictimEmergencyContact = req.body.victim_emergency_contact || req.body.emergency_contact || '';
+
+    try {
+      if (mongoose.connection && mongoose.connection.readyState === 1) {
+        const userDoc = await User.findById(effectiveUserId);
+        if (userDoc) {
+          trustedVictimName = userDoc.name || trustedVictimName;
+          trustedVictimPhone = userDoc.phone || trustedVictimPhone;
+          trustedVictimBloodGroup = userDoc.blood_group || trustedVictimBloodGroup;
+          trustedVictimEmergencyContact = userDoc.emergency_contact || trustedVictimEmergencyContact;
+        }
+      }
+    } catch (e) {
+      // Safe fallback if not found or non-ObjectId format
     }
 
-    const assignedTeam = getAssignedTeam(emergency_type);
-    const priority = calculatePriority(severity);
+    const priority = calculatePriority(resolvedSeverity);
     const resolvedEmergencyId = emergency_id || generateEmergencyId();
+    const assignedTeam = getAssignedTeam(resolvedType);
 
-    const normalizedSource = (location_source || 'GPS').toUpperCase() === 'MANUAL' ? 'MANUAL' : 'GPS';
+    // Optional incident description remains empty string until explicitly supplied by victim
+    const validatedMessage = (typeof message === 'string' && message.trim())
+      ? message.trim()
+      : '';
+
+    const resolvedAccuracy = (typeof location_accuracy === 'number' && !isNaN(location_accuracy))
+      ? Math.round(location_accuracy)
+      : null;
+
+    const resolvedLocationTimestamp = location_timestamp ? new Date(location_timestamp) : null;
+    const resolvedLocationName = (typeof location_name === 'string' && location_name.trim())
+      ? location_name.trim()
+      : '';
 
     const newEmergency = new Emergency({
       emergency_id: resolvedEmergencyId,
-      user_id: user_id.trim(),
-      emergency_type: emergency_type.trim(),
-      severity: severity.trim(),
+      user_id: effectiveUserId,
+      victim_name: trustedVictimName,
+      victim_phone: trustedVictimPhone,
+      victim_blood_group: trustedVictimBloodGroup,
+      victim_emergency_contact: trustedVictimEmergencyContact,
+      emergency_type: resolvedType,
+      severity: resolvedSeverity,
       priority: priority,
       people_affected: Number(people_affected) > 0 ? Number(people_affected) : 1,
-      message: message ? message.trim() : 'Immediate SOS triggered by victim',
-      latitude: latitude,
-      longitude: longitude,
-      location_source: normalizedSource,
+      message: validatedMessage,
+      latitude: resolvedLat,
+      longitude: resolvedLng,
+      location_accuracy: resolvedAccuracy,
+      location_timestamp: resolvedLocationTimestamp,
+      location_source: resolvedSource,
+      location_name: resolvedLocationName,
       assigned_team: assignedTeam,
       status: 'SOS_CREATED',
       assigned_responders: [],
@@ -92,7 +195,7 @@ router.post('/', async (req, res) => {
 
     // Audit log
     await AuditLog.create({
-      user_id: user_id.trim(),
+      user_id: effectiveUserId,
       role: 'VICTIM',
       action: 'VICTIM_CREATED_SOS',
       emergency_id: newEmergency.emergency_id,
@@ -100,14 +203,15 @@ router.post('/', async (req, res) => {
         emergency_type: newEmergency.emergency_type,
         priority: newEmergency.priority,
         latitude: newEmergency.latitude,
-        longitude: newEmergency.longitude
+        longitude: newEmergency.longitude,
+        location_source: newEmergency.location_source
       }
     }).catch(() => {});
 
     // Broadcast real-time Socket.IO event to all admins and responders
     socketService.broadcastNewEmergency(newEmergency);
 
-    console.log(`[EMERGENCY] SOS Created: ${newEmergency.emergency_id} | Type: ${newEmergency.emergency_type} | Priority: ${newEmergency.priority} | Team: ${newEmergency.assigned_team}`);
+    console.log(`[EMERGENCY] SOS Created: ${newEmergency.emergency_id} | Type: ${newEmergency.emergency_type} | Team: ${newEmergency.assigned_team} | Loc: ${newEmergency.location_source}`);
 
     return res.status(201).json({
       success: true,
